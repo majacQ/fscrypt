@@ -19,7 +19,6 @@
 package actions
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,7 +28,7 @@ import (
 )
 
 func TestRecoveryPassphrase(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "fscrypt")
+	tempDir, err := os.MkdirTemp("", "fscrypt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,10 +66,11 @@ func TestRecoveryPassphrase(t *testing.T) {
 	}
 
 	// Test writing the recovery instructions.
-	if err = WriteRecoveryInstructions(passphrase, recoveryFile); err != nil {
+	if err = WriteRecoveryInstructions(passphrase, recoveryProtector, policy,
+		recoveryFile); err != nil {
 		t.Fatal(err)
 	}
-	contentsBytes, err := ioutil.ReadFile(recoveryFile)
+	contentsBytes, err := os.ReadFile(recoveryFile)
 	if err != nil {
 		t.Fatal(err)
 	}

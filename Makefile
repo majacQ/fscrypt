@@ -15,8 +15,9 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
-# Update on each new release!!
-VERSION := v0.3.0
+# Update this on each new release, along with the NEWS.md file.
+VERSION := v0.3.5
+
 NAME := fscrypt
 PAM_NAME := pam_$(NAME)
 
@@ -72,8 +73,6 @@ VERSION_FLAG := -X "main.version=$(if $(TAG_VERSION),$(TAG_VERSION),$(VERSION))"
 
 override GO_LINK_FLAGS += $(VERSION_FLAG) -extldflags "$(LDFLAGS)"
 override GO_FLAGS += --ldflags '$(GO_LINK_FLAGS)'
-# Always use Go modules
-export GO111MODULE = on
 # Use -trimpath if available
 ifneq "" "$(shell go help build | grep trimpath)"
 override GO_FLAGS += -trimpath
@@ -100,15 +99,14 @@ $(PAM_MODULE): $(GO_FILES) $(C_FILES)
 	rm -f $(BIN)/$(PAM_NAME).h
 
 gen: $(BIN)/protoc $(BIN)/protoc-gen-go $(PROTO_FILES)
-	protoc --go_out=. $(PROTO_FILES)
+	protoc --go_out=. --go_opt=paths=source_relative $(PROTO_FILES)
 
 format: $(BIN)/goimports
 	goimports -w $(GO_NONGEN_FILES)
 	clang-format -i -style=Google $(C_FILES)
 
-lint: $(BIN)/golint $(BIN)/staticcheck $(BIN)/misspell
+lint: $(BIN)/staticcheck $(BIN)/misspell
 	go vet ./...
-	go list ./... | xargs -L1 golint -set_exit_status
 	staticcheck ./...
 	misspell -source=text $(FILES)
 	shellcheck -s bash cmd/fscrypt/fscrypt_bash_completion
@@ -198,14 +196,12 @@ ifdef PAM_CONFIG_DIR
 endif
 
 #### Tool Building Commands ####
-TOOLS := $(addprefix $(BIN)/,protoc golint protoc-gen-go goimports staticcheck gocovmerge misspell)
+TOOLS := $(addprefix $(BIN)/,protoc protoc-gen-go goimports staticcheck gocovmerge misspell)
 .PHONY: tools
 tools: $(TOOLS)
 
-$(BIN)/golint:
-	go build -o $@ golang.org/x/lint/golint
 $(BIN)/protoc-gen-go:
-	go build -o $@ github.com/golang/protobuf/protoc-gen-go
+	go build -o $@ google.golang.org/protobuf/cmd/protoc-gen-go
 $(BIN)/goimports:
 	go build -o $@ golang.org/x/tools/cmd/goimports
 $(BIN)/staticcheck:

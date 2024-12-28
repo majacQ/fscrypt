@@ -29,7 +29,11 @@ package main
 */
 import "C"
 import (
+	"fmt"
 	"log"
+	"log/syslog"
+	"os"
+	"strconv"
 	"unsafe"
 
 	"github.com/pkg/errors"
@@ -45,12 +49,17 @@ const (
 	moduleName = "pam_fscrypt"
 	// authtokLabel tags the AUTHTOK in the PAM data.
 	authtokLabel = "fscrypt_authtok"
+	// pidLabel tags the pid in the PAM data.
+	pidLabel = "fscrypt_pid"
 	// These flags are used to toggle behavior of the PAM module.
 	debugFlag = "debug"
 
 	// This option is accepted for compatibility with existing config files,
-	// but now we lock policies unconditionally and this option is a no-op.
+	// but now we lock policies by default and this option is a no-op.
 	lockPoliciesFlag = "lock_policies"
+
+	// Only unlock directories, don't lock them.
+	unlockOnlyFlag = "unlock_only"
 
 	// This option is accepted for compatibility with existing config files,
 	// but it no longer does anything.  pam_fscrypt now drops caches if and
@@ -74,6 +83,12 @@ func Authenticate(handle *pam.Handle, _ map[string]bool) error {
 		return err
 	}
 	defer handle.StopAsPamUser()
+
+	// Save the PID in the PAM data so that the Session hook can try to
+	// detect the unsupported situation where the process was forked.
+	if err := handle.SetString(pidLabel, strconv.Itoa(os.Getpid())); err != nil {
+		return errors.Wrap(err, "could not save pid in PAM data")
+	}
 
 	// If this user doesn't have a login protector, no unlocking is needed.
 	if _, err := loginProtector(handle); err != nil {
@@ -127,6 +142,37 @@ func setupUserKeyringIfNeeded(handle *pam.Handle, policies []*actions.Policy) er
 	return handle.StartAsPamUser()
 }
 
+// The Go runtime doesn't support being forked, as it is multithreaded but
+// fork() deletes all threads except one.  Some programs, such as xrdp, misuse
+// libpam by fork()-ing the process between pam_authenticate() and
+// pam_open_session().  Try to detect such unsupported cases and bail out early
+// rather than deadlocking the Go runtime, which would prevent the user from
+// logging in entirely.  This isn't guaranteed to work, as we are already
+// running Go code here, so we may have already deadlocked.  But in practice the
+// deadlock doesn't occur until hashing the login passphrase is attempted.
+func isUnsupportedFork(handle *pam.Handle) bool {
+	pidString, err := handle.GetString(pidLabel)
+	if err != nil {
+		return false
+	}
+	expectedPid, err := strconv.Atoi(pidString)
+	if err != nil {
+		log.Printf("%s parse error: %v", pidLabel, err)
+		return false
+	}
+	if os.Getpid() == expectedPid {
+		return false
+	}
+	handle.InfoMessage(fmt.Sprintf("%s couldn't automatically unlock directories, see syslog", moduleName))
+	if logger, err := syslog.New(syslog.LOG_WARNING, moduleName); err == nil {
+		fmt.Fprintf(logger,
+			"not unlocking directories because %s forked the process between authenticating the user and opening the session, which is incompatible with %s.  See https://github.com/google/fscrypt/issues/350",
+			handle.GetServiceName(), moduleName)
+		logger.Close()
+	}
+	return true
+}
+
 // OpenSession provisions any policies protected with the login protector.
 func OpenSession(handle *pam.Handle, _ map[string]bool) error {
 	// We will always clear the AUTHTOK data
@@ -147,9 +193,13 @@ func OpenSession(handle *pam.Handle, _ map[string]bool) error {
 		log.Printf("no protector to unlock: %s", err)
 		return nil
 	}
-	policies := policiesUsingProtector(protector)
+	policies := policiesUsingProtector(protector, false)
 	if len(policies) == 0 {
 		log.Print("no policies to unlock")
+		return nil
+	}
+
+	if isUnsupportedFork(handle) {
 		return nil
 	}
 
@@ -184,11 +234,6 @@ func OpenSession(handle *pam.Handle, _ map[string]bool) error {
 
 	// We don't stop provisioning polices on error, we try all of them.
 	for _, policy := range policies {
-		if policy.IsProvisionedByTargetUser() {
-			log.Printf("policy %s already provisioned by %v",
-				policy.Descriptor(), handle.PamUser.Username)
-			continue
-		}
 		if err := policy.UnlockWithProtector(protector); err != nil {
 			log.Printf("unlocking policy %s: %s", policy.Descriptor(), err)
 			continue
@@ -232,19 +277,21 @@ func CloseSession(handle *pam.Handle, args map[string]bool) error {
 	// Don't automatically drop privileges, since we may need them to
 	// deprovision policies or to drop caches.
 
-	log.Print("locking policies protected with login protector")
-	needDropCaches, errLock := lockLoginPolicies(handle)
+	if !args[unlockOnlyFlag] {
+		log.Print("locking policies protected with login protector")
+		needDropCaches, errLock := lockLoginPolicies(handle)
 
-	var errCache error
-	if needDropCaches {
-		log.Print("dropping appropriate filesystem caches at session close")
-		errCache = security.DropFilesystemCache()
+		var errCache error
+		if needDropCaches {
+			log.Print("dropping appropriate filesystem caches at session close")
+			errCache = security.DropFilesystemCache()
+		}
+		if errLock != nil {
+			return errLock
+		}
+		return errCache
 	}
-
-	if errLock != nil {
-		return errLock
-	}
-	return errCache
+	return nil
 }
 
 // lockLoginPolicies deprovisions all policy keys that are protected by the
@@ -264,7 +311,7 @@ func lockLoginPolicies(handle *pam.Handle) (bool, error) {
 		log.Printf("nothing to lock: %s", err)
 		return needDropCaches, nil
 	}
-	policies := policiesUsingProtector(protector)
+	policies := policiesUsingProtector(protector, true)
 	if len(policies) == 0 {
 		log.Print("no policies to lock")
 		return needDropCaches, nil
@@ -276,11 +323,6 @@ func lockLoginPolicies(handle *pam.Handle) (bool, error) {
 
 	// We will try to deprovision all of the policies.
 	for _, policy := range policies {
-		if !policy.IsProvisionedByTargetUser() {
-			log.Printf("policy %s not provisioned by %v",
-				policy.Descriptor(), handle.PamUser.Username)
-			continue
-		}
 		if policy.NeedsUserKeyring() {
 			needDropCaches = true
 		}
@@ -299,6 +341,14 @@ func lockLoginPolicies(handle *pam.Handle) (bool, error) {
 	}
 	return needDropCaches, nil
 }
+
+var noOldAuthTokMessage string = `
+pam_fscrypt: cannot update login protector for '%s' because old passphrase
+was not given.  This is expected when changing a user's passphrase as root.
+You'll need to manually update the protector's passphrase using:
+
+   fscrypt metadata change-passphrase --protector=%s:%s
+`
 
 // Chauthtok rewraps the login protector when the passphrase changes.
 func Chauthtok(handle *pam.Handle, _ map[string]bool) error {
@@ -322,6 +372,9 @@ func Chauthtok(handle *pam.Handle, _ map[string]bool) error {
 		}
 		authtok, err := handle.GetItem(pam.Oldauthtok)
 		if err != nil {
+			handle.InfoMessage(fmt.Sprintf(noOldAuthTokMessage,
+				handle.PamUser.Username,
+				protector.Context.Mount.Path, protector.Descriptor()))
 			return nil, errors.Wrap(err, "could not get OLDAUTHTOK")
 		}
 		return crypto.NewKeyFromCString(authtok)
@@ -350,6 +403,7 @@ func pam_sm_authenticate(pamh unsafe.Pointer, flags, argc C.int, argv **C.char) 
 }
 
 // pam_sm_setcred needed because we use pam_sm_authenticate.
+//
 //export pam_sm_setcred
 func pam_sm_setcred(pamh unsafe.Pointer, flags, argc C.int, argv **C.char) C.int {
 	return C.PAM_SUCCESS

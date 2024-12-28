@@ -63,7 +63,7 @@ var Setup = cli.Command{
 		the README). This may require root privileges.`,
 		mountpointArg, actions.ConfigFileLocation,
 		shortDisplay(timeTargetFlag)),
-	Flags:  []cli.Flag{timeTargetFlag, forceFlag},
+	Flags:  []cli.Flag{timeTargetFlag, forceFlag, allUsersSetupFlag},
 	Action: setupAction,
 }
 
@@ -175,6 +175,26 @@ func validateKeyringPrereqs(ctx *actions.Context, policy *actions.Policy) error 
 	return nil
 }
 
+func writeRecoveryInstructions(recoveryPassphrase *crypto.Key, recoveryProtector *actions.Protector,
+	policy *actions.Policy, dirPath string) error {
+	if recoveryPassphrase == nil {
+		return nil
+	}
+	recoveryFile := filepath.Join(dirPath, "fscrypt_recovery_readme.txt")
+	if err := actions.WriteRecoveryInstructions(recoveryPassphrase, recoveryProtector,
+		policy, recoveryFile); err != nil {
+		return err
+	}
+	msg := fmt.Sprintf(`See %q for important recovery instructions.
+	It is *strongly recommended* to record the recovery passphrase in a
+	secure location; otherwise you will lose access to this directory if you
+	reinstall the operating system or move this filesystem to another
+	system.`, recoveryFile)
+	hdr := "IMPORTANT: "
+	fmt.Print("\n" + hdr + wrapText(msg, len(hdr)) + "\n\n")
+	return nil
+}
+
 // encryptPath sets up encryption on path and provisions the policy to the
 // keyring unless --skip-unlock is used. On failure, an error is returned, any
 // metadata creation is reverted, and the directory is unmodified.
@@ -193,6 +213,7 @@ func encryptPath(path string) (err error) {
 
 	var policy *actions.Policy
 	var recoveryPassphrase *crypto.Key
+	var recoveryProtector *actions.Protector
 	if policyFlag.Value != "" {
 		log.Printf("getting policy for %q", path)
 
@@ -241,17 +262,8 @@ func encryptPath(path string) (err error) {
 			}
 		}()
 
-		// Ask to generate a recovery passphrase if the protector is on
-		// a different filesystem from the policy.  In practice, this
-		// happens for login passphrase-protected directories that
-		// aren't on the root filesystem, since login protectors are
-		// always stored on the root filesystem.
-		var needRecovery bool
+		// Generate a recovery passphrase if needed.
 		if ctx.Mount != protector.Context.Mount && !noRecoveryFlag.Value {
-			needRecovery, err = askQuestion("Protector is on a different filesystem! Generate a recovery passphrase (recommended)?", true)
-		}
-		if needRecovery {
-			var recoveryProtector *actions.Protector
 			if recoveryPassphrase, recoveryProtector, err = actions.AddRecoveryPassphrase(
 				policy, filepath.Base(path)); err != nil {
 				return
@@ -286,14 +298,7 @@ func encryptPath(path string) (err error) {
 	if err = policy.Apply(path); err != nil {
 		return
 	}
-	if recoveryPassphrase != nil {
-		recoveryFile := filepath.Join(path, "fscrypt_recovery_readme.txt")
-		if err = actions.WriteRecoveryInstructions(recoveryPassphrase, recoveryFile); err != nil {
-			return
-		}
-		fmt.Printf("See %q for important recovery instructions!\n", recoveryFile)
-	}
-	return
+	return writeRecoveryInstructions(recoveryPassphrase, recoveryProtector, policy, path)
 }
 
 // checkEncryptable returns an error if the path cannot be encrypted.
@@ -463,7 +468,7 @@ var Lock = cli.Command{
 		recoverable by an attacker who compromises system memory. To be
 		fully safe, you must reboot with a power cycle.`,
 		directoryArg, shortDisplay(dropCachesFlag)),
-	Flags:  []cli.Flag{dropCachesFlag, userFlag, allUsersFlag},
+	Flags:  []cli.Flag{dropCachesFlag, userFlag, allUsersLockFlag},
 	Action: lockAction,
 }
 
@@ -497,7 +502,7 @@ func lockAction(c *cli.Context) error {
 		return newExitError(c, ErrDropCachesPerm)
 	}
 
-	if err = policy.Deprovision(allUsersFlag.Value); err != nil {
+	if err = policy.Deprovision(allUsersLockFlag.Value); err != nil {
 		switch err {
 		case keyring.ErrKeyNotPresent:
 			break
@@ -539,8 +544,10 @@ func isPossibleNoKeyName(filename string) bool {
 	if len(filename) < 22 {
 		return false
 	}
-	// No-key names contain only base64 characters and underscore.
-	validChars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,_"
+	// On the latest kernels, no-key names contain only base64url characters
+	// (A-Z, a-z, 0-9, -, and _).  On older kernels, the + and , characters
+	// were used too.  Allow all of these characters.
+	validChars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_+,"
 	for _, char := range filename {
 		if !strings.ContainsRune(validChars, char) {
 			return false
@@ -1076,29 +1083,30 @@ func removeProtectorAction(c *cli.Context) error {
 		return err
 	}
 
-	// We do not need to unlock anything for this operation
-	protector, err := getProtectorFromFlag(protectorFlag.Value, nil)
+	// We only need the protector descriptor, not the protector itself.
+	ctx, protectorDescriptor, err := parseMetadataFlag(protectorFlag.Value, nil)
 	if err != nil {
 		return newExitError(c, err)
 	}
-	policy, err := getPolicyFromFlag(policyFlag.Value, protector.Context.TargetUser)
+	// We don't need to unlock the policy for this operation.
+	policy, err := getPolicyFromFlag(policyFlag.Value, ctx.TargetUser)
 	if err != nil {
 		return newExitError(c, err)
 	}
 
 	prompt := fmt.Sprintf("Stop protecting policy %s with protector %s?",
-		policy.Descriptor(), protector.Descriptor())
+		policy.Descriptor(), protectorDescriptor)
 	warning := "All files using this policy will NO LONGER be accessible with this protector!!"
 	if err := askConfirmation(prompt, false, warning); err != nil {
 		return newExitError(c, err)
 	}
 
-	if err := policy.RemoveProtector(protector); err != nil {
+	if err := policy.RemoveProtector(protectorDescriptor); err != nil {
 		return newExitError(c, err)
 	}
 
 	fmt.Fprintf(c.App.Writer, "Protector %s no longer protecting policy %s.\n",
-		protector.Descriptor(), policy.Descriptor())
+		protectorDescriptor, policy.Descriptor())
 	return nil
 }
 

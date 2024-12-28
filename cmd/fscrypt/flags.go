@@ -116,7 +116,8 @@ var (
 	allFlags = []prettyFlag{helpFlag, versionFlag, verboseFlag, quietFlag,
 		forceFlag, skipUnlockFlag, timeTargetFlag,
 		sourceFlag, nameFlag, keyFileFlag, protectorFlag,
-		unlockWithFlag, policyFlag, allUsersFlag, noRecoveryFlag}
+		unlockWithFlag, policyFlag, allUsersLockFlag, allUsersSetupFlag,
+		noRecoveryFlag}
 	// universalFlags contains flags that should be on every command
 	universalFlags = []cli.Flag{verboseFlag, quietFlag, helpFlag}
 )
@@ -143,10 +144,10 @@ var (
 	}
 	forceFlag = &boolFlag{
 		Name: "force",
-		Usage: fmt.Sprintf(`Suppresses all confirmation prompts and
-			warnings, causing any action to automatically proceed.
-			WARNING: This bypasses confirmations for protective
-			operations, use with care.`),
+		Usage: `Suppresses all confirmation prompts and warnings,
+			causing any action to automatically proceed.  WARNING:
+			This bypasses confirmations for protective operations,
+			use with care.`,
 	}
 	skipUnlockFlag = &boolFlag{
 		Name: "skip-unlock",
@@ -164,7 +165,7 @@ var (
 			privileges.`,
 		Default: true,
 	}
-	allUsersFlag = &boolFlag{
+	allUsersLockFlag = &boolFlag{
 		Name: "all-users",
 		Usage: `Lock the directory no matter which user(s) have unlocked
 			it. Requires root privileges. This flag is only
@@ -172,9 +173,18 @@ var (
 			different from the one you're locking it as. This flag
 			is only implemented for v2 encryption policies.`,
 	}
+	allUsersSetupFlag = &boolFlag{
+		Name: "all-users",
+		Usage: `When setting up a filesystem for fscrypt, allow users
+			other than the calling user (typically root) to create
+			fscrypt policies and protectors on the filesystem. Note
+			that this will create a world-writable directory, which
+			users could use to fill up the entire filesystem. Hence,
+			this option may not be appropriate for some systems.`,
+	}
 	noRecoveryFlag = &boolFlag{
 		Name:  "no-recovery",
-		Usage: `Don't ask to generate a recovery passphrase.`,
+		Usage: `Don't generate a recovery passphrase.`,
 	}
 )
 
@@ -212,7 +222,8 @@ var (
 		Usage: `Use the contents of FILE as the wrapping key when
 			creating or unlocking raw_key protectors. FILE should be
 			formatted as raw binary and should be exactly 32 bytes
-			long.`,
+			long. When running non-interactively and no key is provided,
+			will try to read the key from stdin.`,
 	}
 	userFlag = &stringFlag{
 		Name:    "user",

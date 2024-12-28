@@ -5,37 +5,32 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/google/fscrypt)](https://goreportcard.com/report/github.com/google/fscrypt)
 [![License](https://img.shields.io/badge/LICENSE-Apache2.0-ff69b4.svg)](http://www.apache.org/licenses/LICENSE-2.0.html)
 
-`fscrypt` is a high-level tool for the management of [Linux filesystem
+`fscrypt` is a high-level tool for the management of [Linux native filesystem
 encryption](https://www.kernel.org/doc/html/latest/filesystems/fscrypt.html).
 `fscrypt` manages metadata, key generation, key wrapping, PAM integration, and
 provides a uniform interface for creating and modifying encrypted directories.
 For a small low-level tool that directly sets policies, see
 [`fscryptctl`](https://github.com/google/fscryptctl).
 
-Note that the kernel part of `fscrypt` (which is integrated into filesystems
-such as ext4) is also sometimes referred to as "fscrypt".  To avoid confusion,
-this documentation instead calls the kernel part "Linux filesystem encryption".
+To use `fscrypt`, you must have a filesystem that supports the Linux native
+filesystem encryption API (which is also sometimes called "fscrypt"; this
+documentation calls it "Linux native filesystem encryption" to avoid confusion).
+Only certain filesystems, such as [ext4](https://en.wikipedia.org/wiki/Ext4) and
+[f2fs](https://en.wikipedia.org/wiki/F2FS), support this API.  For a full list
+of supported filesystems and how to enable encryption support on each one, see
+[Runtime dependencies](#runtime-dependencies).
 
-To use `fscrypt`, you must have a filesystem with encryption enabled and a
-kernel that supports reading/writing from that filesystem. Currently,
-[ext4](https://en.wikipedia.org/wiki/Ext4),
-[F2FS](https://en.wikipedia.org/wiki/F2FS), and
-[UBIFS](https://en.wikipedia.org/wiki/UBIFS) support Linux filesystem
-encryption. Ext4 has supported Linux filesystem encryption
-[since v4.1](https://lwn.net/Articles/639427), F2FS
-[added support in v4.2](https://lwn.net/Articles/649652), and UBIFS
-[added support in v4.10](https://lwn.net/Articles/707900). Other filesystems
-may add support for native encryption in the future. Filesystems may
-additionally require certain kernel configuration options to be set to use
-native encryption.  See [Runtime Dependencies](#runtime-dependencies).
+For the release notes, see the [NEWS file](NEWS.md).
 
-## Table of Contents
+## Table of contents
 
-- [Other encryption solutions](#other-encryption-solutions)
+- [Alternatives to consider](#alternatives-to-consider)
+- [Threat model](#threat-model)
 - [Features](#features)
-- [Building and Installing](#building-and-installing)
-- [Runtime Dependencies](#runtime-dependencies)
+- [Building and installing](#building-and-installing)
+- [Runtime dependencies](#runtime-dependencies)
 - [Configuration file](#configuration-file)
+- [Setting up `fscrypt` on a filesystem](#setting-up-fscrypt-on-a-filesystem)
 - [Setting up for login protectors](#setting-up-for-login-protectors)
   - [Securing your login passphrase](#securing-your-login-passphrase)
   - [Enabling the PAM module](#enabling-the-pam-module)
@@ -43,8 +38,9 @@ native encryption.  See [Runtime Dependencies](#runtime-dependencies).
 	- [Enabling the PAM module on Arch Linux](#enabling-the-pam-module-on-arch-linux)
 	- [Enabling the PAM module on other Linux distros](#enabling-the-pam-module-on-other-linux-distros)
   - [Allowing `fscrypt` to check your login passphrase](#allowing-fscrypt-to-check-your-login-passphrase)
-- [Note about stability](#note-about-stability)
-- [Example Usage](#example-usage)
+- [Backup, restore, and recovery](#backup-restore-and-recovery)
+- [Encrypting existing files](#encrypting-existing-files)
+- [Example usage](#example-usage)
   - [Setting up fscrypt on a directory](#setting-up-fscrypt-on-a-directory)
   - [Locking and unlocking a directory](#locking-and-unlocking-a-directory)
   - [Protecting a directory with your login passphrase](#protecting-a-directory-with-your-login-passphrase)
@@ -54,40 +50,127 @@ native encryption.  See [Runtime Dependencies](#runtime-dependencies).
 - [Contributing](#contributing)
 - [Troubleshooting](#troubleshooting)
   - [I changed my login passphrase, now all my directories are inaccessible](#i-changed-my-login-passphrase-now-all-my-directories-are-inaccessible)
-  - [Directories using my login passphrase are not automatically unlocking.](#directories-using-my-login-passphrase-are-not-automatically-unlocking)
-  - [Getting "encryption not enabled" on an ext4 filesystem.](#getting-encryption-not-enabled-on-an-ext4-filesystem)
-  - [Getting "Operation not permitted" when moving files into an encrypted directory.](#getting-operation-not-permitted-when-moving-files-into-an-encrypted-directory)
-  - [Can't log in with ssh even when user's encrypted home directory is unlocked](#cant-log-in-with-ssh-even-when-users-encrypted-home-directory-is-unlocked)
+  - [Directories using my login passphrase are not automatically unlocking](#directories-using-my-login-passphrase-are-not-automatically-unlocking)
+  - [Getting "encryption not enabled" on an ext4 filesystem](#getting-encryption-not-enabled-on-an-ext4-filesystem)
+  - [Getting "user keyring not linked into session keyring"](#getting-user-keyring-not-linked-into-session-keyring)
+  - [Getting "Operation not permitted" when moving files into an encrypted directory](#getting-operation-not-permitted-when-moving-files-into-an-encrypted-directory)
+  - [Getting "Package not installed" when trying to use an encrypted directory](#getting-package-not-installed-when-trying-to-use-an-encrypted-directory)
+  - [Some processes can't access unlocked encrypted files](#some-processes-cant-access-unlocked-encrypted-files)
+  - [Users can access other users' unlocked encrypted files](#users-can-access-other-users-unlocked-encrypted-files)
+  - [Getting "Required key not available" when backing up locked encrypted files](#getting-required-key-not-available-when-backing-up-locked-encrypted-files)
+  - [The reported size of encrypted symlinks is wrong](#the-reported-size-of-encrypted-symlinks-is-wrong)
 - [Legal](#legal)
 
-## Other encryption solutions
+## Alternatives to consider
 
-It is important to distinguish Linux filesystem encryption from two other
-encryption solutions: [eCryptfs](https://en.wikipedia.org/wiki/ECryptfs) and
-[dm-crypt](https://en.wikipedia.org/wiki/Dm-crypt).
+Operating-system level storage encryption solutions work at either the
+filesystem or block device level.  [Linux native filesystem
+encryption](https://www.kernel.org/doc/html/latest/filesystems/fscrypt.html)
+(the solution configured by `fscrypt`) is filesystem-level; it encrypts
+individual directories.  Only file contents and filenames are encrypted;
+non-filename metadata, such as timestamps, the sizes and number of files, and
+extended attributes, is **not** encrypted.  Users choose which directories will
+be encrypted, and with what keys.
 
-Currently, dm-crypt encrypts an entire block device with a single master key.
-dm-crypt can be used with or without `fscrypt`. All filesystem data (including
-all filesystem metadata) is encrypted with this single key when using dm-crypt,
-while `fscrypt` only encrypts the filenames and file contents in a specified
-directory. Note that using both dm-crypt and `fscrypt` simultaneously will give
-the protections and benefits of both; however, this may cause a decrease in your
-performance, as file contents are encrypted twice.
+Before using `fscrypt`, you should consider other solutions:
 
-One example of a reasonable setup could involve using dm-crypt with a TPM or
-Secure boot key, while using `fscrypt` for the contents of a home directory.
-This would still encrypt the entire drive, but would also tie the encryption of
-a user's personal documents to their passphrase.
+* [**dm-crypt/LUKS**](https://en.wikipedia.org/wiki/Dm-crypt) is block device
+  level encryption: it encrypts an entire block device (and hence an entire
+  filesystem) with one key.  Unlocking this key will unlock the entire block
+  device.  dm-crypt/LUKS is usually configured using
+  [cryptsetup](https://gitlab.com/cryptsetup/cryptsetup/-/wikis/home).
 
-On the other hand, eCryptfs is another form of filesystem encryption on Linux;
-it encrypts a filesystem directory with some key or passphrase. eCryptfs sits on
-top of an existing filesystem. This makes eCryptfs an alternative choice if your
-filesystem or kernel does not support native filesystem encryption.
+* [`systemd-homed`](https://systemd.io/HOME_DIRECTORY/) supports encrypting home
+  directories using the same Linux native filesystem encryption API that
+  `fscrypt` uses.  Note that while the `systemd-homed` documentation refers to
+  this as fscrypt support, it does not use the `fscrypt` tool; directories set
+  up using `systemd-homed` cannot be managed by `fscrypt` and vice versa.
+  `systemd-homed` has better integration with systemd than `fscrypt` does.
+  However, `systemd-homed` (as of systemd v255) uses the
+  ["V1" Linux kernel encryption API](https://www.kernel.org/doc/html/v6.8/filesystems/fscrypt.html#limitations-of-v1-policies),
+  while `fscrypt` prefers the "V2" API. The older API causes
+  [known issues](#some-processes-cant-access-unlocked-encrypted-files), and
+  migrating `systemd-home` to the "V2" API is tracked
+  [in this `systemd` issue](https://github.com/systemd/systemd/issues/18280).
+  Issues with `systemd-homed` should be reported to the systemd developers.
 
-Also note that `fscrypt` does not support or setup either eCryptfs or dm-crypt.
-For these tools, use
-[ecryptfs-utils](https://packages.debian.org/source/jessie/ecryptfs-utils) for
-eCryptfs or [cryptsetup](https://linux.die.net/man/8/cryptsetup) for dm-crypt.
+* [**eCryptfs**](https://en.wikipedia.org/wiki/ECryptfs) is an alternative
+  filesystem-level encryption solution.  It is a stacked filesystem, which means
+  it sits on top of a real filesystem, rather than being directly integrated
+  into the real filesystem.  Stacked filesystems have a couple advantages (such
+  as working on almost any real filesystem), but also some significant
+  disadvantages.  eCryptfs is usually configured using
+  [ecryptfs-utils](https://packages.debian.org/stretch/ecryptfs-utils).
+
+* Some Linux filesystems support encryption natively, but not in a way that is
+  compatible with the common API that `fscrypt` uses.  Examples of this are
+  Bcachefs and ZFS.  (Note: ZFS is not part of the upstream kernel.)  Bcachefs
+  encryption is similar to dm-crypt in that it encrypts the full filesystem with
+  one key.  ZFS encryption operates on a per-dataset basis.  If you are using
+  one of these filesystems, refer to the documentation for that filesystem.
+
+Which solution to use?  Here are our recommendations:
+
+* eCryptfs shouldn't be used, if at all possible.  eCryptfs's use of filesystem
+  stacking causes a number of issues, and eCryptfs is no longer actively
+  maintained.  The original author of eCryptfs recommends using Linux native
+  filesystem encryption instead.  The largest users of eCryptfs (Ubuntu and
+  Chrome OS) have switched to dm-crypt or Linux native filesystem encryption.
+
+* If you need fine-grained control of encryption within a filesystem and you are
+  using a filesystem that supports `fscrypt`, then use `fscrypt`, or `fscrypt`
+  together with dm-crypt/LUKS.  If you don't need this, then use dm-crypt/LUKS.
+
+  To understand this recommendation: consider that the main advantage of
+  `fscrypt` is to allow different files on the same filesystem to be encrypted
+  by different keys, and thus be unlockable, lockable, and securely deletable
+  independently from each other.  Therefore, `fscrypt` is useful in cases such
+  as:
+
+    * Multi-user systems, since each user's files can be encrypted with their
+      own key that is unlocked by their own passphrase.
+
+    * Single-user systems where it's not possible for all files to have the
+      strongest level of protection.  For example, it might be necessary for the
+      system to boot up without user interaction.  Any files that are needed to
+      do so can only be encrypted by a hardware-protected (e.g. TPM-bound) key
+      at best.  If the user's personal files are located on the same filesystem,
+      then with dm-crypt/LUKS the user's personal files would be limited to this
+      weak level of protection.  With `fscrypt`, the user's personal files could
+      be fully protected using the user's passphrase.
+
+  `fscrypt` isn't very useful in the following cases:
+
+    * Single-user systems where the user is willing to enter a strong passphrase
+      at boot time to unlock the entire filesystem.  In this case, the main
+      advantage of `fscrypt` would go unused, so dm-crypt/LUKS would be better
+      as it would provide better security (due to ensuring that all files and
+      all filesystem metadata are encrypted).
+
+    * Any case where it is feasible to create a separate filesystem for every
+      encryption key you want to use.
+
+  Note: dm-crypt/LUKS and `fscrypt` aren't mutually exclusive; they can be used
+  together when the performance hit of double encryption is tolerable.  It only
+  makes sense to do this when the keys for each encryption layer are protected
+  in different ways, such that each layer serves a different purpose.  A
+  reasonable set-up would be to encrypt the whole filesystem with dm-crypt/LUKS
+  using a TPM-bound key that is automatically unlocked at boot time, and also
+  encrypt users' home directories with `fscrypt` using their login passphrases.
+
+## Threat model
+
+Like other storage encryption solutions (including dm-crypt/LUKS and eCryptfs),
+Linux native filesystem encryption is primarily intended to protect the
+confidentiality of data from a single point-in-time permanent offline compromise
+of the disk.  For a detailed description of the threat model, see the [kernel
+documentation](https://www.kernel.org/doc/html/latest/filesystems/fscrypt.html#threat-model).
+
+It's worth emphasizing that none of these encryption solutions protect unlocked
+encrypted files from other users on the same system (that's the job of OS-level
+access control, such as UNIX file permissions), or from the cloud provider you
+may be running a virtual machine on.  By themselves, they also do not protect
+from "evil maid" attacks, i.e. non-permanent offline compromises of the disk.
 
 ## Features
 
@@ -95,7 +178,7 @@ eCryptfs or [cryptsetup](https://linux.die.net/man/8/cryptsetup) for dm-crypt.
 [e4crypt](http://man7.org/linux/man-pages/man8/e4crypt.8.html) by providing a
 more managed environment and handling more functionality in the background.
 `fscrypt` has a [design document](https://goo.gl/55cCrI) specifying its full
-architecture.  See also the [kernel documentation for Linux filesystem
+architecture.  See also the [kernel documentation for Linux native filesystem
 encryption](https://www.kernel.org/doc/html/latest/filesystems/fscrypt.html).
 
 Briefly, `fscrypt` deals with protectors and policies. Protectors represent some
@@ -135,18 +218,13 @@ Concretely, `fscrypt` contains the following functionality:
 *   `fscrypt status [PATH]` - Gets detailed info about filesystems or paths
 *   `fscrypt metadata` - Manages policies or protectors directly
 
-The following functionality is planned:
-*   `fscrypt backup` - Manages backups of the `fscrypt` metadata
-*   `fscrypt recovery` - Manages recovery keys for directories
-*   `fscrypt cleanup` - Scans filesystem for unused policies/protectors
-
 See the example usage section below or run `fscrypt COMMAND --help` for more
 information about each of the commands.
 
-## Building and Installing
+## Building and installing
 
 `fscrypt` has a minimal set of build dependencies:
-*   [Go](https://golang.org/doc/install) 1.11 or higher. Older versions may work
+*   [Go](https://golang.org/doc/install) 1.18 or higher. Older versions may work
     but they are not tested or supported.
 *   A C compiler (`gcc` or `clang`)
 *   `make`
@@ -157,12 +235,12 @@ information about each of the commands.
     - Arch: [`pam`](https://www.archlinux.org/packages/core/x86_64/pam/)
       package (usually installed by default)
 
-Once all the dependencies are installed, you can get the repository by running:
+Once all the dependencies are installed, clone the repository by running:
 ```shell
-go get -d github.com/google/fscrypt/...
+git clone https://github.com/google/fscrypt
 ```
-Running `make` in `$GOPATH/src/github.com/google/fscrypt` builds the binary
-(`fscrypt`) and PAM module (`pam_fscrypt.so`) in the `bin/` directory.
+Running `make` builds the binary (`fscrypt`) and PAM module (`pam_fscrypt.so`)
+in the `bin/` directory.
 
 Running `sudo make install` installs `fscrypt` into `/usr/local/bin`,
 `pam_fscrypt.so` into `/usr/local/lib/security`, and `pam_fscrypt/config` into
@@ -183,36 +261,44 @@ binary, or `make install-pam` to only install the PAM files.
 Alternatively, if you only want to install the `fscrypt` binary to
 `$GOPATH/bin`, simply run:
 ```shell
-go get github.com/google/fscrypt/cmd/fscrypt
+go install github.com/google/fscrypt/cmd/fscrypt@latest
 ```
 
 See the `Makefile` for instructions on how to further customize the build.
 
-## Runtime Dependencies
+## Runtime dependencies
 
 To run, `fscrypt` needs the following libraries:
 *   `libpam.so` (almost certainly already on your system)
 
-In addition, `fscrypt` requires kernel support for encryption for your
-filesystem, and for some filesystems that a feature flag has been
-enabled in the on-disk filesystem superblock:
+In addition, `fscrypt` requires a filesystem that supports the Linux native
+filesystem encryption API.  Currently, the filesystems that support this are:
 
-* For ext4, the kernel must be v4.1 or later, and the kernel configuration must
-  have either `CONFIG_FS_ENCRYPTION=y` (for kernels v5.1+) or
-  `CONFIG_EXT4_ENCRYPTION=y` or `=m` (for older kernels).  Also, the filesystem
-  must have the `encrypt` feature flag enabled; see
-  [here](#getting-encryption-not-enabled-on-an-ext4-filesystem) for how to
-  enable it.
+* ext4, with upstream kernel v4.1 or later.  The kernel configuration must
+  contain `CONFIG_FS_ENCRYPTION=y` (for kernels v5.1+) or
+  `CONFIG_EXT4_ENCRYPTION=y` or `=m` (for older kernels).  The filesystem must
+  also have the `encrypt` feature flag enabled; to enable this flag, see
+  [here](#getting-encryption-not-enabled-on-an-ext4-filesystem).
 
-* For f2fs, the kernel must be v4.2 or later, and the kernel configuration must
-  have either `CONFIG_FS_ENCRYPTION=y` (for kernels v5.1+) or
-  `CONFIG_F2FS_FS_ENCRYPTION=y` (for older kernels).  Also, the filesystem must
-  have the `encrypt` feature flag enabled.  It can be enabled at format time by
-  `mkfs.f2fs -O encrypt`, or later by `fsck.f2fs -O encrypt`.
+* f2fs, with upstream kernel v4.2 or later.  The kernel configuration must
+  contain `CONFIG_FS_ENCRYPTION=y` (for kernels v5.1+) or
+  `CONFIG_F2FS_FS_ENCRYPTION=y` (for older kernels).  The filesystem must also
+  have the `encrypt` feature flag enabled; this flag can be enabled at format
+  time by `mkfs.f2fs -O encrypt` or later by `fsck.f2fs -O encrypt`.
 
-* For UBIFS, the kernel must be v4.10 or later, and the kernel configuration
-  must have either `CONFIG_FS_ENCRYPTION=y` (for kernels v5.1+) or
+* UBIFS, with upstream kernel v4.10 or later.  The kernel configuration must
+  contain `CONFIG_FS_ENCRYPTION=y` (for kernels v5.1+) or
   `CONFIG_UBIFS_FS_ENCRYPTION=y` (for older kernels).
+
+* CephFS, with upstream kernel v6.6 or later.  The kernel configuration must
+  contain `CONFIG_FS_ENCRYPTION=y`.
+
+* [Lustre](https://www.lustre.org/), with Lustre v2.14.0 or later.  For details,
+  see the Lustre documentation.  Please note that Lustre is not part of the
+  upstream Linux kernel, and its encryption implementation has not been reviewed
+  by the authors of `fscrypt`.  Questions/issues about Lustre encryption should
+  be directed to the Lustre developers.  Lustre version 2.14 does not encrypt
+  filenames, even though it claims to, so v2.15.0 or later should be used.
 
 To check whether the needed option is enabled in your kernel, run:
 ```shell
@@ -222,10 +308,6 @@ zgrep -h ENCRYPTION /proc/config.gz /boot/config-$(uname -r) | sort | uniq
 It is also recommended to use Linux kernel v5.4 or later, since this
 allows the use of v2 encryption policies.  v2 policies have several
 security and usability improvements over v1 policies.
-
-Be careful when using encryption on removable media, since filesystems with the
-`encrypt` feature cannot be mounted on systems with kernel versions older than
-the minimums listed above -- even to access unencrypted files!
 
 If you configure `fscrypt` to use non-default features, other kernel
 prerequisites may be needed too.  See [Configuration
@@ -251,7 +333,8 @@ that looks like the following:
 		"filenames": "AES_256_CTS",
 		"policy_version": "2"
 	},
-	"use_fs_keyring_for_v1_policies": false
+	"use_fs_keyring_for_v1_policies": false,
+	"allow_cross_user_metadata": false
 }
 ```
 
@@ -277,8 +360,8 @@ The fields are:
       Normally, "AES_256_XTS" is recommended.
 
     * "filenames" is the algorithm used to encrypt file names.  The
-      choices are "AES_256_CTS", "AES_128_CTS", and "Adiantum".
-      Normally, "AES_256_CTS" is recommended.
+      choices are "AES_256_CTS", "AES_128_CTS", "Adiantum", and
+      "AES_256_HCTR2".  Normally, "AES_256_CTS" is recommended.
 
       To use algorithms other than "AES_256_XTS" for contents and
       "AES_256_CTS" for filenames, the needed algorithm(s) may need to
@@ -296,19 +379,66 @@ The fields are:
       kernel v5.4 or later, but are preferable to version "1" if you
       don't mind this restriction.
 
-* "use\_fs\_keyring\_for\_v1\_policies" specifies whether to add keys
-  for v1 encryption policies to the filesystem keyring, rather than to
-  user keyrings.  This can solve [issues with processes being unable
-  to access encrypted files](#cant-log-in-with-ssh-even-when-users-encrypted-home-directory-is-unlocked).
-  However, it requires kernel v5.4 or later, and it makes unlocking
-  and locking encrypted directories require root.
+* "use\_fs\_keyring\_for\_v1\_policies" specifies whether to add keys for v1
+  encryption policies to the filesystem keyrings, rather than to user keyrings.
+  This can solve [issues with processes being unable to access unlocked
+  encrypted files](#some-processes-cant-access-unlocked-encrypted-files).
+  However, it requires kernel v5.4 or later, and it makes unlocking and locking
+  encrypted directories require root.  (The PAM module will still work.)
 
-  The purpose of this setting is to allow people to take advantage of
-  some of the improvements in Linux v5.4 on encrypted directories that
-  are also compatible with older kernels.  If you don't need
-  compatibility with older kernels, it's better to not use this
-  setting and instead (re-)create your encrypted directories with
-  `"policy_version": "2"`.
+  The purpose of this setting is to allow people to take advantage of some of
+  the improvements in Linux v5.4 on encrypted directories that are also
+  compatible with older kernels.  If you don't need compatibility with older
+  kernels, it's better to not use this setting and instead (re-)create your
+  encrypted directories with `"policy_version": "2"`.
+
+* "allow\_cross\_user\_metadata" specifies whether `fscrypt` will allow
+  protectors and policies from other non-root users to be read, e.g. to be
+  offered as options by `fscrypt encrypt`.  The default value is `false`, since
+  other users might be untrusted and could create malicious files.  This can be
+  set to `true` to restore the old behavior on systems where `fscrypt` metadata
+  needs to be shared between multiple users.  Note that this option is
+  independent from the permissions on the metadata files themselves, which are
+  set to 0600 by default; users who wish to share their metadata files with
+  other users would also need to explicitly change their mode to 0644.
+
+## Setting up `fscrypt` on a filesystem
+
+`fscrypt` needs some directories to exist on the filesystem on which encryption
+will be used:
+
+* `MOUNTPOINT/.fscrypt/policies`
+* `MOUNTPOINT/.fscrypt/protectors`
+
+(If login protectors are used, these must also exist on the root filesystem.)
+
+To create these directories, run `fscrypt setup MOUNTPOINT`.  If MOUNTPOINT is
+owned by root, as is usually the case, then this command will require root.
+
+There will be one decision you'll need to make: whether non-root users will be
+allowed to create `fscrypt` metadata (policies and protectors).
+
+If you say `y`, then these directories will be made world-writable, with the
+sticky bit set so that users can't delete each other's files -- just like
+`/tmp`.  If you say `N`, then these directories will be writable only by root.
+
+Saying `y` maximizes the usability of `fscrypt`, and on most systems it's fine
+to say `y`.  However, on some systems this may be inappropriate, as it will
+allow malicious users to fill the entire filesystem unless filesystem quotas
+have been configured -- similar to problems that have historically existed with
+other world-writable directories, e.g. `/tmp`.  If you are concerned about this,
+say `N`.  If you say `N`, then you'll only be able to run `fscrypt` as root to
+set up encryption on users' behalf, unless you manually set custom permissions
+on the metadata directories to grant write access to specific users or groups.
+
+If you chose the wrong mode at `fscrypt setup` time, you can change the
+directory permissions at any time.  To enable single-user writable mode, run:
+
+    sudo chmod 0755 MOUNTPOINT/.fscrypt/*
+
+To enable world-writable mode, run:
+
+    sudo chmod 1777 MOUNTPOINT/.fscrypt/*
 
 ## Setting up for login protectors
 
@@ -423,8 +553,15 @@ after `pam_unix.so` in `/etc/pam.d/common-session` or similar, but before
 which starts processes that access the user's home directory during their
 session.
 
-To make `pam_fscrypt.so` print debugging messages to the system log, add the
-`debug` option.  All hook types accept this option.
+`pam_fscrypt.so` accepts several options:
+
+* `debug`: print additional debug messages to the syslog.  All hook types accept
+  this option.
+
+* `unlock_only`: only unlock directories (at log-in); don't also lock them (at
+  log-out).  This is only relevant for the "session" hook.  Note that in
+  `fscrypt` v0.2.9 and earlier, unlock-only was the default behavior, and
+  `lock_policies` needed to be specified to enable locking.
 
 ### Allowing `fscrypt` to check your login passphrase
 
@@ -441,16 +578,121 @@ file `/etc/pam.d/fscrypt` containing:
 auth        required    pam_unix.so
 ```
 
-## Note about stability
+## Backup, restore, and recovery
 
-`fscrypt` follows [semantic versioning](http://semver.org). As such, all
-versions below `1.0.0` should be considered development versions. This means no
-guarantees are make about the stability of APIs or formats of config files. As
-the on-disk metadata structures use [Protocol
-Buffers](https://github.com/google/protobuf), we don't expect to break backwards
-compatibility for metadata, but we give no guarantees.
+Encrypted files and directories can't be backed up while they are "locked", i.e.
+while they appear in encrypted form.  They can only be backed up while they are
+unlocked, in which case they can be backed up like any other files.  Note that
+since the encryption is transparent, the files won't be encrypted in the backup
+(unless the backup applies its own encryption).
 
-## Example Usage
+For the same reason (and several others), an encrypted directory can't be
+directly "moved" to another filesystem.  However, it is possible to create a new
+encrypted directory on the destination filesystem using `fscrypt encrypt`, then
+copy the contents of the source directory into it.
+
+For directories protected by a `custom_passphrase` or `raw_key` protector, all
+metadata needed to unlock the directory (excluding the actual passphrase or raw
+key, of course) is located in the `.fscrypt` directory at the root of the
+filesystem that contains the encrypted directory.  For example, if you have an
+encrypted directory `/home/$USER/private` that is protected by a custom
+passphrase, all `fscrypt` metadata needed to unlock the directory with that
+custom passphrase will be located in `/home/.fscrypt` if you are using a
+dedicated `/home` filesystem or in `/.fscrypt` if you aren't.  If desired, you
+can back up the `fscrypt` metadata by making a copy of this directory, although
+this isn't too important since this metadata is located on the same filesystem
+as the encrypted directory(s).
+
+`pam_passphrase` (login passphrase) protectors are a bit different as they are
+always stored on the root filesystem, in `/.fscrypt`.  This ties them to the
+specific system and ensures that each user has only a single login protector.
+Therefore, encrypted directories on a non-root filesystem **can't be unlocked
+via a login protector if the operating system is reinstalled or if the disk is
+connected to another system** -- even if the new system uses the same login
+passphrase for the user.
+
+Because of this, `fscrypt encrypt` will automatically generate a recovery
+passphrase when creating a login passphrase-protected directory on a non-root
+filesystem.  The recovery passphrase is simply a `custom_passphrase` protector
+with a randomly generated high-entropy passphrase.  Initially, the recovery
+passphrase is stored in a file in the encrypted directory itself; therefore, to
+use it you **must** record it in another secure location.  It is strongly
+recommended to do this.  Then, if ever needed, you can use `fscrypt unlock` to
+unlock the directory with the recovery passphrase (by choosing the recovery
+protector instead of the login protector).
+
+If you really want to disable the generation of a recovery passphrase, use the
+`--no-recovery` option.  Only do this if you really know what you are doing and
+are prepared for potential data loss.
+
+Alternative approaches to supporting recovery of login passphrase-protected
+directories include the following:
+
+* Manually adding your own recovery protector, using
+  `fscrypt metadata add-protector-to-policy`.
+
+* Backing up and restoring the `/.fscrypt` directory on the root filesystem.
+  Note that after restoring the `/.fscrypt` directory, unlocking the login
+  protectors will require the passphrases they had at the time the backup was
+  made **even if they were changed later**, so make sure to remember these
+  passphrase(s) or record them in a secure location.  Also note that if the UUID
+  of the root filesystem changed, you will need to manually fix the UUID in any
+  `.fscrypt/protectors/*.link` files on other filesystems.
+
+The auto-generated recovery passphrases should be enough for most users, though.
+
+## Encrypting existing files
+
+`fscrypt` isn't designed to encrypt existing files, as this presents significant
+technical challenges and usually is impossible to do securely.  Therefore,
+`fscrypt encrypt` only works on empty directories.
+
+Of course, it is still possible to create an encrypted directory, copy files
+into it, and delete the original files.  The `mv` command will even work, as it
+will fall back to a copy and delete ([except on older
+kernels](#getting-operation-not-permitted-when-moving-files-into-an-encrypted-directory)).
+However, beware that due to the characteristics of filesystems and storage
+devices, this may not properly protect the files, as their original contents may
+still be forensically recoverable from disk even after being deleted.  It's
+**much** better to encrypt files from the very beginning.
+
+There are only a few cases where copying files into an encrypted directory can
+really make sense, such as:
+
+* The source files are located on an in-memory filesystem such as `tmpfs`.
+
+* The confidentiality of the source files isn't important, e.g. they are
+  system default files and the user hasn't added any personal files yet.
+
+* The source files are protected by a different `fscrypt` policy, the old and
+  new policies are protected by only the same protector(s), and the old policy
+  uses similar strength encryption.
+
+If one of the above doesn't apply, then it's probably too late to securely
+encrypt your existing files.
+
+As a best-effort attempt, you can use the `shred` program to try to erase the
+original files.  Here are the recommended commands for "best-effort" encryption
+of an existing directory named "dir":
+
+```bash
+mkdir dir.new
+fscrypt encrypt dir.new
+cp -a -T dir dir.new
+find dir -type f -print0 | xargs -0 shred -n1 --remove=unlink
+rm -rf dir
+mv dir.new dir
+```
+
+However, beware that `shred` isn't guaranteed to be effective on all storage
+devices and filesystems.  For example, if you're using an SSD, "overwrites" of
+data typically go to new flash blocks, so they aren't really overwrites.
+
+Note: for reasons similar to the above, changed or removed `fscrypt` protectors
+aren't guaranteed to be forensically unrecoverable from disk either.  Thus, the
+use of weak or default passphrases should be avoided, even if changed later.
+
+## Example usage
 
 All these examples assume there is an ext4 filesystem which supports
 encryption mounted at `/mnt/disk`.  See
@@ -474,11 +716,15 @@ MOUNTPOINT  DEVICE     FILESYSTEM  ENCRYPTION   FSCRYPT
 Defaulting to policy_version 2 because kernel supports it.
 Customizing passphrase hashing difficulty for this system...
 Created global config file at "/etc/fscrypt.conf".
-Metadata directories created at "/.fscrypt".
+Allow users other than root to create fscrypt metadata on the root filesystem?
+(See https://github.com/google/fscrypt#setting-up-fscrypt-on-a-filesystem) [y/N] y
+Metadata directories created at "/.fscrypt", writable by everyone.
 
 # Start using fscrypt with our filesystem
->>>>> fscrypt setup /mnt/disk
-Metadata directories created at "/mnt/disk/.fscrypt".
+>>>>> sudo fscrypt setup /mnt/disk
+Allow users other than root to create fscrypt metadata on this filesystem? (See
+https://github.com/google/fscrypt#setting-up-fscrypt-on-a-filesystem) [y/N] y
+Metadata directories created at "/mnt/disk/.fscrypt", writable by everyone.
 
 # Initialize encryption on a new empty directory
 >>>>> mkdir /mnt/disk/dir1
@@ -504,10 +750,10 @@ POLICY                            UNLOCKED  PROTECTORS
 16382f282d7b29ee27e6460151d03382  Yes       7626382168311a9d
 ```
 
-#### Quiet Version
+#### Quiet version
 ```bash
->>>>> sudo fscrypt setup --quiet --force
->>>>> fscrypt setup /mnt/disk --quiet
+>>>>> sudo fscrypt setup --quiet --force --all-users
+>>>>> sudo fscrypt setup /mnt/disk --quiet --all-users
 >>>>> echo "hunter2" | fscrypt encrypt /mnt/disk/dir1 --quiet --source=custom_passphrase  --name="Super Secret"
 ```
 
@@ -566,7 +812,7 @@ PROTECTOR         LINKED  DESCRIPTION
 Hello World
 ```
 
-#### Quiet Version
+#### Quiet version
 ```bash
 >>>>> fscrypt lock /mnt/disk/dir1 --quiet
 >>>>> echo "hunter2" | fscrypt unlock /mnt/disk/dir1 --quiet
@@ -620,7 +866,7 @@ PROTECTOR         LINKED  DESCRIPTION
 6891f0a901f0065e  No      login protector for joerichey
 ```
 
-#### Quiet Version
+#### Quiet version
 ```bash
 >>>>> mkdir /mnt/disk/dir2
 >>>>> echo "password" | fscrypt encrypt /mnt/disk/dir2 --source=pam_passphrase --quiet
@@ -648,7 +894,7 @@ Confirm passphrase:
 Passphrase for protector 7626382168311a9d successfully changed.
 ```
 
-#### Quiet Version
+#### Quiet version
 ```bash
 >>>>> printf "hunter2\nhunter3" | fscrypt metadata change-passphrase --protector=/mnt/disk:7626382168311a9d --quiet
 ```
@@ -698,7 +944,7 @@ Enter key file for protector "Skeleton": secret.key
 "/mnt/disk/dir3" is now encrypted, unlocked, and ready for use.
 ```
 
-#### Quiet Version
+#### Quiet version
 ```bash
 >>>>> head --bytes=32 /dev/urandom > secret.key
 >>>>> fscrypt encrypt /mnt/disk/dir3 --key=secret.key --source=raw_key --name=Skeleton
@@ -769,7 +1015,7 @@ Stop protecting policy 16382f282d7b29ee27e6460151d03382 with protector 2c75f519b
 Protector 2c75f519b9c9959d no longer protecting policy 16382f282d7b29ee27e6460151d03382.
 ```
 
-#### Quiet Version
+#### Quiet version
 ```bash
 >>>>> echo "hunter2" | fscrypt metadata add-protector-to-policy --protector=/mnt/disk:2c75f519b9c9959d --policy=/mnt/disk:16382f282d7b29ee27e6460151d03382 --key=secret.key --quiet
 >>>>> fscrypt metadata remove-protector-from-policy --protector=/mnt/disk:2c75f519b9c9959d --policy=/mnt/disk:16382f282d7b29ee27e6460151d03382 --quiet --force
@@ -789,12 +1035,14 @@ guidelines in `CONTRIBUTING.md`. We will try our best to help.
 
 #### I changed my login passphrase, now all my directories are inaccessible
 
-The PAM module `pam_fscrypt.so` should automatically detect changes to a user's
-login passphrase so that they can still access their encrypted directories.
-However, sometimes a user's login passphrase can become desynchronized from
-their login protector.  This can happen if their login passphrase is managed by
-an external system, if the PAM module is not installed, or if the PAM module is
-not properly configured.  See [Enabling the PAM
+Usually, the PAM module `pam_fscrypt.so` will automatically detect changes to a
+user's login passphrase and update the user's `fscrypt` login protector so that
+they retain access their login-passphrase protected directories.  However,
+sometimes a user's login passphrase can become desynchronized from their
+`fscrypt` login protector.  This can happen if `root` assigns the user a new
+passphrase without providing the old one, if the user's login passphrase is
+managed by an external system such as LDAP, if the PAM module is not installed,
+or if the PAM module is not properly configured.  See [Enabling the PAM
 module](#enabling-the-pam-module) for how to configure the PAM module.
 
 To fix a user's login protector, find the corresponding protector ID by running
@@ -803,21 +1051,35 @@ To fix a user's login protector, find the corresponding protector ID by running
 fscrypt metadata change-passphrase --protector=/:ID
 ```
 
-#### Directories using my login passphrase are not automatically unlocking.
+#### Directories using my login passphrase are not automatically unlocking
 
 First, directories won't unlock if your session starts without password
 authentication.  The most common case of this is public-key ssh login.  To
 trigger a password authentication event, run `su $USER -c exit`.
 
-If your session did start with password authentication, then either the PAM
-module is not correctly installed and configured, or your login passphrase
-changed and got out of sync with your login protector.  Ensure you have
-correctly [configured the PAM module](#enabling-the-pam-module).  Then, if
-necessary, [manually change your login protector's
-passphrase](#i-changed-my-login-passphrase-now-all-my-directories-are-inaccessible)
-to get it back in sync with your actual login passphrase.
+If your session did start with password authentication, then the following may
+be causing the issue:
 
-#### Getting "encryption not enabled" on an ext4 filesystem.
+* The PAM module might not be configured correctly.  Ensure you have correctly
+  [configured the PAM module](#enabling-the-pam-module).
+
+* If your login passphrase recently changed, then it might have gotten out of
+  sync with your login protector.  To fix this, [manually change your login
+  protector's
+  passphrase](#i-changed-my-login-passphrase-now-all-my-directories-are-inaccessible)
+  to get it back in sync with your actual login passphrase.
+
+* Due to a [bug in sshd](https://bugzilla.mindrot.org/show_bug.cgi?id=2548),
+  encrypted directories won't auto-unlock when logging in with ssh using the
+  `ChallengeResponseAuthentication` ssh authentication method, which is also
+  called `KbdInteractiveAuthentication`.  This ssh authentication method
+  implements password authentication by default, so it might appear similar to
+  `PasswordAuthentication`.  However, only `PasswordAuthentication` works with
+  `fscrypt`.  To avoid this issue, make sure that your `/etc/ssh/sshd_config`
+  file contains `PasswordAuthentication yes`, `UsePAM yes`, and either
+  `ChallengeResponseAuthentication no` or `KbdInteractiveAuthentication no`.
+
+#### Getting "encryption not enabled" on an ext4 filesystem
 
 This is usually caused by your ext4 filesystem not having the `encrypt` feature
 flag enabled.  The `encrypt` feature flag allows the filesystem to contain
@@ -864,86 +1126,162 @@ fsck -fn /dev/device
 
 If you've enabled `encrypt` but you still get the "encryption not enabled"
 error, then the problem is that ext4 encryption isn't enabled in your kernel
-config.  See [Runtime Dependencies](#runtime-dependencies) for how to enable it.
+config.  See [Runtime dependencies](#runtime-dependencies) for how to enable it.
 
-#### Getting "Operation not permitted" when moving files into an encrypted directory.
+#### Getting "user keyring not linked into session keyring"
 
-This occurs when the kernel version is older than v5.1 and the source files are
-on the same filesystem and are either unencrypted or are in a different
-encrypted directory hierarchy.
+Some older versions of Ubuntu didn't link the user keyring into the session
+keyring, which caused problems with `fscrypt`.
 
-Solution: copy the files instead, e.g. with `cp`.
+To avoid this issue, upgrade to Ubuntu 20.04 or later.
 
-`mv` works on kernels v5.1 and later, since those kernels return the correct
-error code to make `mv` fall back to a copy itself.
+#### Getting "Operation not permitted" when moving files into an encrypted directory
 
-__HOWEVER:__ in either case, it is important to realize that the original files
-may remain recoverable from free space on the disk after they are deleted.  It's
-much better to keep all files encrypted from the very beginning.
+Originally, filesystems didn't return the correct error code when attempting to
+rename unencrypted files (or files with a different encryption policy) into an
+encrypted directory.  Specifically, they returned `EPERM` instead of `EXDEV`,
+which caused `mv` to fail rather than fall back to a copy as expected.
 
-As a last resort, the `shred` program may be used to try to overwrite the
-original files, e.g.:
+This bug was fixed in version 5.1 of the mainline Linux kernel, as well as in
+versions 4.4 and later of the LTS (Long Term Support) branches of the Linux
+kernel; specifically v4.19.155, 4.14.204, v4.9.242, and v4.4.242.
 
-```shell
-cp file encrypted_dir/
-shred -u file
-```
+If the kernel can't be upgraded, this bug can be worked around by explicitly
+copying the files instead, e.g. with `cp`.
 
-However, `shred` isn't guaranteed to be effective on all filesystems and storage
-devices.
+__IMPORTANT:__ Encrypting existing files can be insecure.  Before doing so, read
+[Encrypting existing files](#encrypting-existing-files).
 
-#### Can't log in with ssh even when user's encrypted home directory is unlocked
+#### Getting "Package not installed" when trying to use an encrypted directory
 
-This is caused by a limitation in the original design of Linux
-filesystem encryption which made it difficult to ensure that all
-processes can access unlocked encrypted files.  This issue can also
-manifest in other ways such as Docker containers being unable to
-access encrypted files, or NetworkManager being unable to access
-certificates if they are located in an encrypted directory.
+Trying to create or open an encrypted file will fail with `ENOPKG` ("Package not
+installed") when the kernel doesn't support one or more of the cryptographic
+algorithms used by the file or its directory.  Note that `fscrypt encrypt` and
+`fscrypt unlock` will still succeed; it's only using the directory afterwards
+that will fail.
 
-The recommended way to fix this is by creating your encrypted
-directories using v2 encryption policies rather than v1.  This
-requires Linux v5.4 or later and `fscrypt` v0.2.6 or later.  If these
-prerequisites are met, enable v2 policies for new directories by
-setting `"policy_version": "2"` in `/etc/fscrypt.conf`.  For example:
+The kernel will always support the algorithms that `fscrypt` uses by default.
+However, if you changed the contents and/or filenames encryption algorithms in
+[`/etc/fscrypt.conf`](#configuration-file), then you may run into this issue.
+To fix it, enable the needed `CONFIG_CRYPTO_*` options in your Linux kernel
+configuration.  See the [kernel
+documentation](https://www.kernel.org/doc/html/latest/filesystems/fscrypt.html#encryption-modes-and-usage)
+for details about which option(s) are required for each encryption mode.
 
-```
-	"options": {
-		"padding": "32",
-		"contents": "AES_256_XTS",
-		"filenames": "AES_256_CTS",
-		"policy_version": "2"
-	},
-```
+#### Some processes can't access unlocked encrypted files
 
-This only affects new directories.  If you want to upgrade an existing
-encrypted directory to use a v2 policy, you'll need to re-create it by
-using `fscrypt encrypt` to encrypt a new empty directory, copying your
-files into it, and replacing the original directory with it.
+This issue is caused by a limitation in the original design of Linux native
+filesystem encryption which made it difficult to ensure that all processes can
+access unlocked encrypted files.  This issue can manifest in many ways, such as:
 
-In `fscrypt` v0.2.7 and later, the `fscrypt setup` command
-automatically sets `"policy_version": "2"` when creating
-`/etc/fscrypt.conf` if kernel support is present.
+* SSH to a user with an encrypted home directory not working, even when that
+  directory is already unlocked
 
-__IMPORTANT:__ directories that use v2 encryption policies are
-unusable on Linux v5.3 and earlier.  If this will be a problem for you
-(for example, if your encrypted directories are on removable storage
-that needs to work on computers with both old and new kernels), you'll
-need to use v1 policies instead.  In this case, you can enable a
-fallback option to make `fscrypt` use the filesystem keyring for v1
-policies:
+* Docker containers being unable to access encrypted files that were unlocked
+  from outside the container
 
-```
-	"use_fs_keyring_for_v1_policies": true
-```
+* NetworkManager being unable to access certificates stored in the user's
+  already-unlocked encrypted home directory
 
-This fallback option only has an effect if the kernel supports using
-the filesystem keyring.  This option is also useful if you simply
-don't want to re-create your old, v1 directories.  However, this
-option makes manually unlocking and locking encrypted directories
-start to require root.  (The PAM module will still work.)  E.g.,
-you'll need to run `sudo fscrypt unlock`, not `fscrypt unlock`.  Most
-people should just use v2 policies instead.
+* Other system services being unable to access already-unlocked encrypted files
+
+* `sudo` sessions being unable to access already-unlocked encrypted files
+
+* A user being unable to access encrypted files that were unlocked by root
+
+If an OS-level error is shown, it is `ENOKEY` ("Required key not available").
+
+To fix this issue, first run `fscrypt status $dir`, where `$dir` is your
+encrypted directory.  If the output contains `policy_version:2`, then your issue
+is something else, so stop reading now.  If the output contains
+`policy_version:1` or doesn't contain any mention of `policy_version`, then
+you'll need to upgrade your directory(s) to policy version 2.  To do this:
+
+1. Upgrade to Linux kernel v5.4 or later.
+
+2. Upgrade to `fscrypt` v0.2.7 or later.
+
+3. Run `sudo fscrypt setup --force`.
+
+4. Re-encrypt your encrypted directory(s).  Since files cannot be (re-)encrypted
+   in-place, this requires replacing them with new directories.  For example:
+   ```
+     fscrypt unlock dir  # if not already unlocked
+     mkdir dir.new
+     fscrypt encrypt dir.new
+     cp -a -T dir dir.new
+     find dir -type f -print0 | xargs -0 shred -n1 --remove=unlink
+     rm -rf dir
+     mv dir.new dir
+   ```
+
+   You don't need to create a new protector.  I.e., when `fscrypt encrypt` asks
+   for a protector, just choose the one you were using before.
+
+5. `fscrypt status` on your directory(s) should now show `policy_version:2`,
+   and the issue should be gone.
+
+Note that once your directories are using policy version 2, they will only be
+usable with Linux kernel v5.4 and later and `fscrypt` v0.2.6 and later.  So be
+careful not to downgrade your software past those versions.
+
+This issue can also be fixed by setting `"use_fs_keyring_for_v1_policies": true`
+in `/etc/fscrypt.conf`, as described in [Configuration
+file](#configuration-file).  This avoids needing to upgrade directories to
+policy version 2.  However, this has some limitations, and the same kernel and
+`fscrypt` prerequisites still apply for this option to take effect.  It is
+recommended to upgrade your directories to policy version 2 instead.
+
+#### Users can access other users' unlocked encrypted files
+
+This is working as intended.  When an encrypted directory is unlocked (or
+locked), it is unlocked (or locked) for all users.  Encryption is not access
+control; the Linux kernel already has many access control mechanisms, such as
+the standard UNIX file permissions, that can be used to control access to files.
+
+Setting the mode of your encrypted directory to `0700` will prevent users other
+than the directory's owner and `root` from accessing it while it is unlocked.
+In `fscrypt` v0.2.5 and later, `fscrypt encrypt` sets this mode automatically.
+
+Having the locked/unlocked status of directories be global instead of per-user
+may seem unintuitive, but it is actually the only logical way.  The encryption
+is done by the filesystem, so in reality the filesystem either has the key or it
+doesn't.  And once it has the key, any additional checks of whether particular
+users "have" the key would be OS-level access control checks (not cryptography)
+that are redundant with existing OS-level access control mechanisms.
+
+Similarly, any attempt of the filesystem encryption feature to prevent `root`
+from accessing unlocked encrypted files would be pointless.  On Linux systems,
+`root` is usually all-powerful and can always get access to files in ways that
+cannot be prevented, e.g. `setuid()` and `ptrace()`.  The only reliable way to
+limit what `root` can do is via a mandatory access control system, e.g. SELinux.
+
+The original design of Linux native filesystem encryption actually did put the
+keys into per-user keyrings.  However, this caused a [massive number of
+problems](#some-processes-cant-access-unlocked-encrypted-files), as it's
+actually very common that encrypted files need to be accessed by processes
+running under different user IDs -- even if it may not be immediately apparent.
+
+#### Getting "Required key not available" when backing up locked encrypted files
+
+Encrypted files can't be backed up while locked; you need to unlock them first.
+For details, see [Backup, restore, and recovery](#backup-restore-and-recovery).
+
+#### The reported size of encrypted symlinks is wrong
+
+Originally, filesystems didn't conform to POSIX when reporting the size of
+encrypted symlinks, as they gave the size of the ciphertext symlink target
+rather than the size of the plaintext target.  This would make the reported size
+of symlinks appear to be slightly too large when queried using ``lstat()`` or
+similar system calls.  Most programs don't care about this, but in rare cases
+programs can depend on the filesystem reporting symlink sizes correctly.
+
+This bug was fixed in version 5.15 of the mainline Linux kernel, as well as in
+versions 4.19 and later of the LTS (Long Term Support) branches of the Linux
+kernel; specifically v5.10.63, v5.4.145, and v4.19.207.
+
+If the kernel can't be upgraded, the only workaround for this bug is to update
+any affected programs to not depend on symlink sizes being reported correctly.
 
 ## Legal
 

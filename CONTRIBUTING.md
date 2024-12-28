@@ -19,7 +19,7 @@ again.
 
 __IMPORTANT__: Any significant security issues should __NOT__ be reported in
 the public issue tracker. Practice responsible disclosure by emailing
-<joerichey@google.com> and <tyhicks@canonical.com> directly.
+<joerichey@google.com> and <ebiggers@google.com> directly.
 
 Any bugs, problems, or design discussion relating to fscrypt should be raised
 in the [Github Issue Tracker](https://github.com/google/fscrypt/issues/new).
@@ -150,7 +150,7 @@ your code.
   - Downloads [`protoc`](https://github.com/google/protobuf) to compile the
   `.proto` files.
   - Turns each `.proto` file into a matching `.pb.go` file using
-    [`protoc-gen-go`](https://github.com/golang/protobuf/tree/master/protoc-gen-go).
+    [`protoc-gen-go`](https://go.googlesource.com/protobuf/+/refs/heads/master/cmd/protoc-gen-go).
 
 `make format` runs:
   - [`goimports`](https://godoc.org/golang.org/x/tools/cmd/goimports)
@@ -160,5 +160,4 @@ your code.
 
 `make lint` runs:
   - [`go vet`](https://golang.org/cmd/vet/) 
-  - [`golint`](https://github.com/golang/lint)
   - [`staticcheck`](https://github.com/dominikh/go-tools/tree/master/cmd/staticcheck)

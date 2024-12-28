@@ -21,17 +21,19 @@ package metadata
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 var testConfig = &Config{
 	Source: SourceType_custom_passphrase,
 	HashCosts: &HashingCosts{
-		Time:        10,
-		Memory:      1 << 12,
-		Parallelism: 8,
+		Time:            10,
+		Memory:          1 << 12,
+		Parallelism:     8,
+		TruncationFixed: true,
 	},
 	Options: DefaultOptions,
 }
@@ -41,7 +43,8 @@ var testConfigString = `{
 	"hash_costs": {
 		"time": "10",
 		"memory": "4096",
-		"parallelism": "8"
+		"parallelism": "8",
+		"truncation_fixed": true
 	},
 	"options": {
 		"padding": "32",
@@ -49,9 +52,19 @@ var testConfigString = `{
 		"filenames": "AES_256_CTS",
 		"policy_version": "1"
 	},
-	"use_fs_keyring_for_v1_policies": false
+	"use_fs_keyring_for_v1_policies": false,
+	"allow_cross_user_metadata": false
 }
 `
+
+// Used for JSON string comparison while ignoring whitespace
+func compact(t testing.TB, s string) string {
+	var b bytes.Buffer
+	if err := json.Compact(&b, []byte(s)); err != nil {
+		t.Fatalf("failed to compact json: %v", err)
+	}
+	return b.String()
+}
 
 // Makes sure that writing a config and reading it back gives the same thing.
 func TestWrite(t *testing.T) {
@@ -61,7 +74,7 @@ func TestWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("json encoded config:\n%s", b.String())
-	if b.String() != testConfigString {
+	if compact(t, b.String()) != compact(t, testConfigString) {
 		t.Errorf("did not match: %s", testConfigString)
 	}
 }

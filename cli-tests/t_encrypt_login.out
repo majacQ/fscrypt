@@ -1,7 +1,14 @@
 
 # Encrypt with login protector
-See "MNT/dir/fscrypt_recovery_readme.txt" for important recovery instructions!
-ext4 filesystem "MNT" has 2 protectors and 1 policy
+
+IMPORTANT: See "MNT/dir/fscrypt_recovery_readme.txt" for
+           important recovery instructions. It is *strongly recommended* to
+           record the recovery passphrase in a secure location; otherwise you
+           will lose access to this directory if you reinstall the operating
+           system or move this filesystem to another system.
+
+ext4 filesystem "MNT" has 2 protectors and 1 policy.
+All users can create fscrypt metadata on this filesystem.
 
 PROTECTOR         LINKED                              DESCRIPTION
 desc1  Yes (MNT_ROOT)  login protector for fscrypt-test-user
@@ -9,14 +16,15 @@ desc2  No                                  custom protector "Recovery passphrase
 
 POLICY                            UNLOCKED  PROTECTORS
 desc3  Yes       desc1, desc2
-ext4 filesystem "MNT_ROOT" has 1 protector and 0 policies
+ext4 filesystem "MNT_ROOT" has 1 protector and 0 policies.
+All users can create fscrypt metadata on this filesystem.
 
 PROTECTOR         LINKED  DESCRIPTION
 desc1  No      login protector for fscrypt-test-user
 "MNT/dir" is encrypted with fscrypt.
 
 Policy:   desc3
-Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2 
+Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2
 Unlocked: Yes
 
 Protected with 2 protectors:
@@ -43,10 +51,16 @@ IMPORTANT: Before continuing, ensure you have properly set up your system for
            https://github.com/google/fscrypt#setting-up-for-login-protectors
 
 Enter login passphrase for fscrypt-test-user: 
-Protector is on a different filesystem! Generate a recovery passphrase (recommended)? [Y/n] y
-See "MNT/dir/fscrypt_recovery_readme.txt" for important recovery instructions!
+
+IMPORTANT: See "MNT/dir/fscrypt_recovery_readme.txt" for
+           important recovery instructions. It is *strongly recommended* to
+           record the recovery passphrase in a secure location; otherwise you
+           will lose access to this directory if you reinstall the operating
+           system or move this filesystem to another system.
+
 "MNT/dir" is now encrypted, unlocked, and ready for use.
-ext4 filesystem "MNT" has 2 protectors and 1 policy
+ext4 filesystem "MNT" has 2 protectors and 1 policy.
+All users can create fscrypt metadata on this filesystem.
 
 PROTECTOR         LINKED                              DESCRIPTION
 desc10  Yes (MNT_ROOT)  login protector for fscrypt-test-user
@@ -54,14 +68,15 @@ desc11  No                                  custom protector "Recovery passphras
 
 POLICY                            UNLOCKED  PROTECTORS
 desc12  Yes       desc10, desc11
-ext4 filesystem "MNT_ROOT" has 1 protector and 0 policies
+ext4 filesystem "MNT_ROOT" has 1 protector and 0 policies.
+All users can create fscrypt metadata on this filesystem.
 
 PROTECTOR         LINKED  DESCRIPTION
 desc10  No      login protector for fscrypt-test-user
 "MNT/dir" is encrypted with fscrypt.
 
 Policy:   desc12
-Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2 
+Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2
 Unlocked: Yes
 
 Protected with 2 protectors:
@@ -70,8 +85,15 @@ desc10  Yes (MNT_ROOT)  login protector for fscrypt-test-user
 desc11  No                                  custom protector "Recovery passphrase for dir"
 
 # Encrypt with login protector as root
-See "MNT/dir/fscrypt_recovery_readme.txt" for important recovery instructions!
-ext4 filesystem "MNT" has 2 protectors and 1 policy
+
+IMPORTANT: See "MNT/dir/fscrypt_recovery_readme.txt" for
+           important recovery instructions. It is *strongly recommended* to
+           record the recovery passphrase in a secure location; otherwise you
+           will lose access to this directory if you reinstall the operating
+           system or move this filesystem to another system.
+
+ext4 filesystem "MNT" has 2 protectors and 1 policy.
+All users can create fscrypt metadata on this filesystem.
 
 PROTECTOR         LINKED                              DESCRIPTION
 desc19  Yes (MNT_ROOT)  login protector for fscrypt-test-user
@@ -79,14 +101,15 @@ desc20  No                                  custom protector "Recovery passphras
 
 POLICY                            UNLOCKED  PROTECTORS
 desc21  Yes       desc19, desc20
-ext4 filesystem "MNT_ROOT" has 1 protector and 0 policies
+ext4 filesystem "MNT_ROOT" has 1 protector and 0 policies.
+All users can create fscrypt metadata on this filesystem.
 
 PROTECTOR         LINKED  DESCRIPTION
 desc19  No      login protector for fscrypt-test-user
 "MNT/dir" is encrypted with fscrypt.
 
 Policy:   desc21
-Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2 
+Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2
 Unlocked: Yes
 
 Protected with 2 protectors:
@@ -94,22 +117,28 @@ PROTECTOR         LINKED                              DESCRIPTION
 desc19  Yes (MNT_ROOT)  login protector for fscrypt-test-user
 desc20  No                                  custom protector "Recovery passphrase for dir"
 
+Protector is owned by fscrypt-test-user:fscrypt-test-user
+"MNT/dir" is now locked.
+"MNT/dir" is now locked.
+
 # Encrypt with login protector with --no-recovery
-ext4 filesystem "MNT" has 1 protector and 1 policy
+ext4 filesystem "MNT" has 1 protector and 1 policy.
+All users can create fscrypt metadata on this filesystem.
 
 PROTECTOR         LINKED                              DESCRIPTION
 desc28  Yes (MNT_ROOT)  login protector for fscrypt-test-user
 
 POLICY                            UNLOCKED  PROTECTORS
 desc29  Yes       desc28
-ext4 filesystem "MNT_ROOT" has 1 protector and 0 policies
+ext4 filesystem "MNT_ROOT" has 1 protector and 0 policies.
+All users can create fscrypt metadata on this filesystem.
 
 PROTECTOR         LINKED  DESCRIPTION
 desc28  No      login protector for fscrypt-test-user
 "MNT/dir" is encrypted with fscrypt.
 
 Policy:   desc29
-Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2 
+Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2
 Unlocked: Yes
 
 Protected with 1 protector:
@@ -120,13 +149,14 @@ desc28  Yes (MNT_ROOT)  login protector for fscrypt-test-user
 "MNT_ROOT/dir" is encrypted with fscrypt.
 
 Policy:   desc34
-Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2 
+Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2
 Unlocked: Yes
 
 Protected with 1 protector:
 PROTECTOR         LINKED  DESCRIPTION
 desc35  No      login protector for fscrypt-test-user
-ext4 filesystem "MNT_ROOT" has 1 protector and 1 policy
+ext4 filesystem "MNT_ROOT" has 1 protector and 1 policy.
+All users can create fscrypt metadata on this filesystem.
 
 PROTECTOR         LINKED  DESCRIPTION
 desc35  No      login protector for fscrypt-test-user
@@ -140,18 +170,40 @@ desc34  Yes       desc35
                          identified by user, not by name.
 
 To fix this, don't specify the --name=PROTECTOR_NAME option.
-ext4 filesystem "MNT" has 0 protectors and 0 policies
+ext4 filesystem "MNT" has 0 protectors and 0 policies.
+All users can create fscrypt metadata on this filesystem.
 
-ext4 filesystem "MNT_ROOT" has 0 protectors and 0 policies
+ext4 filesystem "MNT_ROOT" has 0 protectors and 0 policies.
+All users can create fscrypt metadata on this filesystem.
 
 [ERROR] fscrypt status: file or directory "MNT/dir" is not
                         encrypted
 
 # Try to use the wrong login passphrase
 [ERROR] fscrypt encrypt: incorrect login passphrase
-ext4 filesystem "MNT" has 0 protectors and 0 policies
+ext4 filesystem "MNT" has 0 protectors and 0 policies.
+All users can create fscrypt metadata on this filesystem.
 
-ext4 filesystem "MNT_ROOT" has 0 protectors and 0 policies
+ext4 filesystem "MNT_ROOT" has 0 protectors and 0 policies.
+All users can create fscrypt metadata on this filesystem.
 
 [ERROR] fscrypt status: file or directory "MNT/dir" is not
                         encrypted
+
+# Test that linked protector works even if UUID link is broken
+
+IMPORTANT: See "MNT/dir/fscrypt_recovery_readme.txt" for
+           important recovery instructions. It is *strongly recommended* to
+           record the recovery passphrase in a secure location; otherwise you
+           will lose access to this directory if you reinstall the operating
+           system or move this filesystem to another system.
+
+ext4 filesystem "MNT" has 2 protectors and 1 policy.
+All users can create fscrypt metadata on this filesystem.
+
+PROTECTOR         LINKED                              DESCRIPTION
+desc39  No                                  custom protector "Recovery passphrase for dir"
+desc40  Yes (MNT_ROOT)  login protector for fscrypt-test-user
+
+POLICY                            UNLOCKED  PROTECTORS
+desc41  Yes       desc40, desc39

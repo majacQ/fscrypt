@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/fscrypt/filesystem"
 	"github.com/google/fscrypt/util"
 	"github.com/pkg/errors"
 )
@@ -47,6 +48,7 @@ func setupContext() (ctx *Context, err error) {
 	ConfigFileLocation = filepath.Join(mountpoint, "test.conf")
 
 	// Should not be able to setup without a config file
+	os.Remove(ConfigFileLocation)
 	if badCtx, badCtxErr := NewContextFromMountpoint(mountpoint, nil); badCtxErr == nil {
 		badCtx.Mount.RemoveAllMetadata()
 		return nil, fmt.Errorf("created context at %q without config file", badCtx.Mount.Path)
@@ -66,7 +68,7 @@ func setupContext() (ctx *Context, err error) {
 		return nil, err
 	}
 
-	return ctx, ctx.Mount.Setup()
+	return ctx, ctx.Mount.Setup(filesystem.WorldWritable)
 }
 
 // Cleans up the testing config file and testing filesystem data.

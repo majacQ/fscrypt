@@ -71,8 +71,8 @@ type ErrDirFilesOpen struct {
 }
 
 func (err *ErrDirFilesOpen) Error() string {
-	return fmt.Sprintf(`Directory was incompletely locked because some files
-	are still open. These files remain accessible.`)
+	return `Directory was incompletely locked because some files are still
+	open. These files remain accessible.`
 }
 
 // ErrDirUnlockedByOtherUsers indicates that a directory can't be locked because
@@ -106,6 +106,12 @@ func getFullName(c *cli.Context) string {
 	return c.App.HelpName
 }
 
+func isGrubInstalledOnFilesystem(mnt *filesystem.Mount) bool {
+	dir := filepath.Join(mnt.Path, "boot/grub")
+	grubDirMount, _ := filesystem.FindMount(dir)
+	return grubDirMount == mnt
+}
+
 func suggestEnablingEncryption(mnt *filesystem.Mount) string {
 	kconfig := "CONFIG_FS_ENCRYPTION=y"
 	switch mnt.FilesystemType {
@@ -136,7 +142,7 @@ func suggestEnablingEncryption(mnt *filesystem.Mount) string {
 
 		> sudo tune2fs -O encrypt %q
 		`, mnt.Device)
-		if _, err := os.Stat(filepath.Join(mnt.Path, "boot/grub")); err == nil {
+		if isGrubInstalledOnFilesystem(mnt) {
 			s += `
 			WARNING: you seem to have GRUB installed on this
 			filesystem. Before doing the above, make sure you are
@@ -224,8 +230,16 @@ func getErrorSuggestions(err error) string {
 			if !util.IsKernelVersionAtLeast(4, 10) {
 				return "ubifs encryption requires kernel v4.10 or later."
 			}
+		case "ceph":
+			if !util.IsKernelVersionAtLeast(6, 6) {
+				return "CephFS encryption requires kernel v6.6 or later."
+			}
 		}
 		return ""
+	case *filesystem.ErrNoCreatePermission:
+		return `For how to allow users to create fscrypt metadata on a
+			filesystem, refer to
+			https://github.com/google/fscrypt#setting-up-fscrypt-on-a-filesystem`
 	case *filesystem.ErrNotSetup:
 		return fmt.Sprintf(`Run "sudo fscrypt setup %s" to use fscrypt
 		        on this filesystem.`, e.Mount.Path)
@@ -237,6 +251,11 @@ func getErrorSuggestions(err error) string {
 		return `This is usually the result of a bad PAM configuration.
 			Either correct the problem in your PAM stack, enable
 			pam_keyinit.so, or run "keyctl link @u @s".`
+	case *metadata.ErrLockedRegularFile:
+		return `It is not possible to operate directly on a locked
+			regular file, since the kernel does not support this.
+			Specify the parent directory instead. (For loose files,
+			any directory with the file's policy works.)`
 	}
 	switch errors.Cause(err) {
 	case crypto.ErrMlockUlimit:

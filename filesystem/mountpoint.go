@@ -25,7 +25,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -38,19 +37,22 @@ import (
 )
 
 var (
-	// This map holds data about the state of the system's filesystems.
+	// These maps hold data about the state of the system's filesystems.
 	//
-	// It only contains one Mount per filesystem, even if there are
+	// They only contain one Mount per filesystem, even if there are
 	// additional bind mounts, since we want to store fscrypt metadata in
-	// only one place per filesystem.  If it is ambiguous which Mount should
-	// be used, an explicit nil entry is stored.
+	// only one place per filesystem.  When it is ambiguous which Mount
+	// should be used for a filesystem, mountsByDevice will contain an
+	// explicit nil entry, and mountsByPath won't contain an entry.
 	mountsByDevice map[DeviceNumber]*Mount
+	mountsByPath   map[string]*Mount
 	// Used to make the mount functions thread safe
 	mountMutex sync.Mutex
 	// True if the maps have been successfully initialized.
 	mountsInitialized bool
 	// Supported tokens for filesystem links
 	uuidToken = "UUID"
+	pathToken = "PATH"
 	// Location to perform UUID lookup
 	uuidDirectory = "/dev/disk/by-uuid"
 )
@@ -74,6 +76,21 @@ func unescapeString(str string) string {
 	return sb.String()
 }
 
+// EscapeString is the reverse of unescapeString.  Use this to avoid injecting
+// spaces or newlines into output that uses these characters as separators.
+func EscapeString(str string) string {
+	var sb strings.Builder
+	for _, b := range []byte(str) {
+		switch b {
+		case ' ', '\t', '\n', '\\':
+			sb.WriteString(fmt.Sprintf("\\%03o", b))
+		default:
+			sb.WriteByte(b)
+		}
+	}
+	return sb.String()
+}
+
 // We get the device name via the device number rather than use the mount source
 // field directly.  This is necessary to handle a rootfs that was mounted via
 // the kernel command line, since mountinfo always shows /dev/root for that.
@@ -89,6 +106,7 @@ func getDeviceName(num DeviceNumber) string {
 // Parse one line of /proc/self/mountinfo.
 //
 // The line contains the following space-separated fields:
+//
 //	[0] mount ID
 //	[1] parent ID
 //	[2] major:minor
@@ -167,11 +185,11 @@ func addUncontainedSubtreesRecursive(dst map[string]bool,
 // preferably a read-write mount.  However, that doesn't work in containers
 // where the "/" subtree might not be mounted.  Here's a real-world example:
 //
-//              mnt.Subtree               mnt.Path
-//              -----------               --------
-//              /var/lib/lxc/base/rootfs  /
-//              /var/cache/pacman/pkg     /var/cache/pacman/pkg
-//              /srv/repo/x86_64          /srv/http/x86_64
+//	mnt.Subtree               mnt.Path
+//	-----------               --------
+//	/var/lib/lxc/base/rootfs  /
+//	/var/cache/pacman/pkg     /var/cache/pacman/pkg
+//	/srv/repo/x86_64          /srv/http/x86_64
 //
 // In this case, all mnt.Subtree are independent.  To handle this case, we must
 // choose the Mount whose mnt.Path contains the others, i.e. the first one.
@@ -182,10 +200,10 @@ func addUncontainedSubtreesRecursive(dst map[string]bool,
 // needed to correctly handle bind mounts.  For example, in the following case,
 // the first Mount should be chosen:
 //
-//              mnt.Subtree               mnt.Path
-//              -----------               --------
-//              /foo                      /foo
-//              /foo/dir                  /dir
+//	mnt.Subtree               mnt.Path
+//	-----------               --------
+//	/foo                      /foo
+//	/foo/dir                  /dir
 //
 // To solve this, we divide the mounts into non-overlapping trees of mnt.Path.
 // Then, we choose one of these trees which contains (exactly or via path
@@ -196,18 +214,18 @@ func findMainMount(filesystemMounts []*Mount) *Mount {
 	// since non-last mounts were already excluded earlier.
 	//
 	// Also build the set of all mounted subtrees.
-	mountsByPath := make(map[string]*mountpointTreeNode)
+	filesystemMountsByPath := make(map[string]*mountpointTreeNode)
 	allSubtrees := make(map[string]bool)
 	for _, mnt := range filesystemMounts {
-		mountsByPath[mnt.Path] = &mountpointTreeNode{mount: mnt}
+		filesystemMountsByPath[mnt.Path] = &mountpointTreeNode{mount: mnt}
 		allSubtrees[mnt.Subtree] = true
 	}
 
 	// Divide the mounts into non-overlapping trees of mountpoints.
-	for path, mntNode := range mountsByPath {
+	for path, mntNode := range filesystemMountsByPath {
 		for path != "/" && mntNode.parent == nil {
 			path = filepath.Dir(path)
-			if parent := mountsByPath[path]; parent != nil {
+			if parent := filesystemMountsByPath[path]; parent != nil {
 				mntNode.parent = parent
 				parent.children = append(parent.children, mntNode)
 			}
@@ -232,7 +250,7 @@ func findMainMount(filesystemMounts []*Mount) *Mount {
 	// *all* mounted subtrees.  Equivalently, select a mountpoint tree in
 	// which every uncontained subtree is mounted.
 	var mainMount *Mount
-	for _, mntNode := range mountsByPath {
+	for _, mntNode := range filesystemMountsByPath {
 		mnt := mntNode.mount
 		if mntNode.parent != nil {
 			continue
@@ -259,8 +277,10 @@ func findMainMount(filesystemMounts []*Mount) *Mount {
 
 // This is separate from loadMountInfo() only for unit testing.
 func readMountInfo(r io.Reader) error {
-	mountsByPath := make(map[string]*Mount)
 	mountsByDevice = make(map[DeviceNumber]*Mount)
+	mountsByPath = make(map[string]*Mount)
+	allMountsByDevice := make(map[DeviceNumber][]*Mount)
+	allMountsByPath := make(map[string]*Mount)
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -280,19 +300,22 @@ func readMountInfo(r io.Reader) error {
 		// Note this overrides the info if we have seen the mountpoint
 		// earlier in the file. This is correct behavior because the
 		// mountpoints are listed in mount order.
-		mountsByPath[mnt.Path] = mnt
+		allMountsByPath[mnt.Path] = mnt
 	}
 	// For each filesystem, choose a "main" Mount and discard any additional
 	// bind mounts.  fscrypt only cares about the main Mount, since it's
-	// where the fscrypt metadata is stored.  Store all main Mounts in
-	// mountsByDevice so that they can be found by device number later.
-	allMountsByDevice := make(map[DeviceNumber][]*Mount)
-	for _, mnt := range mountsByPath {
+	// where the fscrypt metadata is stored.  Store all the main Mounts in
+	// mountsByDevice and mountsByPath so that they can be found later.
+	for _, mnt := range allMountsByPath {
 		allMountsByDevice[mnt.DeviceNumber] =
 			append(allMountsByDevice[mnt.DeviceNumber], mnt)
 	}
 	for deviceNumber, filesystemMounts := range allMountsByDevice {
-		mountsByDevice[deviceNumber] = findMainMount(filesystemMounts)
+		mnt := findMainMount(filesystemMounts)
+		mountsByDevice[deviceNumber] = mnt // may store an explicit nil entry
+		if mnt != nil {
+			mountsByPath[mnt.Path] = mnt
+		}
 	}
 	return nil
 }
@@ -328,11 +351,9 @@ func AllFilesystems() ([]*Mount, error) {
 		return nil, err
 	}
 
-	mounts := make([]*Mount, 0, len(mountsByDevice))
-	for _, mount := range mountsByDevice {
-		if mount != nil {
-			mounts = append(mounts, mount)
-		}
+	mounts := make([]*Mount, 0, len(mountsByPath))
+	for _, mount := range mountsByPath {
+		mounts = append(mounts, mount)
 	}
 
 	sort.Sort(PathSorter(mounts))
@@ -358,18 +379,38 @@ func FindMount(path string) (*Mount, error) {
 	if err := loadMountInfo(); err != nil {
 		return nil, err
 	}
+	// First try to find the mount by the number of the containing device.
 	deviceNumber, err := getNumberOfContainingDevice(path)
 	if err != nil {
 		return nil, err
 	}
 	mnt, ok := mountsByDevice[deviceNumber]
-	if !ok {
-		return nil, errors.Errorf("couldn't find mountpoint containing %q", path)
+	if ok {
+		if mnt == nil {
+			return nil, filesystemLacksMainMountError(deviceNumber)
+		}
+		return mnt, nil
 	}
-	if mnt == nil {
-		return nil, filesystemLacksMainMountError(deviceNumber)
+	// The mount couldn't be found by the number of the containing device.
+	// Fall back to walking up the directory hierarchy and checking for a
+	// mount at each directory path.  This is necessary for btrfs, where
+	// files report a different st_dev from the /proc/self/mountinfo entry.
+	curPath, err := canonicalizePath(path)
+	if err != nil {
+		return nil, err
 	}
-	return mnt, nil
+	for {
+		mnt := mountsByPath[curPath]
+		if mnt != nil {
+			return mnt, nil
+		}
+		// Move to the parent directory unless we have reached the root.
+		parent := filepath.Dir(curPath)
+		if parent == curPath {
+			return nil, errors.Errorf("couldn't find mountpoint containing %q", path)
+		}
+		curPath = parent
+	}
 }
 
 // GetMount is like FindMount, except GetMount also returns an error if the path
@@ -399,78 +440,143 @@ func GetMount(mountpoint string) (*Mount, error) {
 	return mnt, nil
 }
 
-// getMountFromLink returns the Mount object which matches the provided link.
-// This link is formatted as a tag (e.g. <token>=<value>) similar to how they
-// appear in "/etc/fstab". Currently, only "UUID" tokens are supported. An error
-// is returned if the link is invalid or we cannot load the required mount data.
-// If a mount has been updated since the last call to one of the mount
-// functions, run UpdateMountInfo to see the change.
-func getMountFromLink(link string) (*Mount, error) {
-	// Parse the link
-	link = strings.TrimSpace(link)
-	linkComponents := strings.Split(link, "=")
-	if len(linkComponents) != 2 {
-		return nil, &ErrFollowLink{link, errors.New("invalid link format")}
-	}
-	token := linkComponents[0]
-	value := linkComponents[1]
-	if token != uuidToken {
-		return nil, &ErrFollowLink{link, errors.Errorf("token type %q not supported", token)}
-	}
+func uuidToDeviceNumber(uuid string) (DeviceNumber, error) {
+	uuidSymlinkPath := filepath.Join(uuidDirectory, uuid)
+	return getDeviceNumber(uuidSymlinkPath)
+}
 
-	// See if UUID points to an existing device
-	searchPath := filepath.Join(uuidDirectory, value)
-	if filepath.Base(searchPath) != value {
-		return nil, &ErrFollowLink{link, errors.Errorf("invalid UUID format %q", value)}
-	}
-	deviceNumber, err := getDeviceNumber(searchPath)
-	if err != nil {
-		return nil, &ErrFollowLink{link, errors.Errorf("no device with UUID %s", value)}
-	}
-
-	// Lookup mountpoints for device in global store
+func deviceNumberToMount(deviceNumber DeviceNumber) (*Mount, bool) {
 	mountMutex.Lock()
 	defer mountMutex.Unlock()
 	if err := loadMountInfo(); err != nil {
-		return nil, err
+		log.Print(err)
+		return nil, false
 	}
 	mnt, ok := mountsByDevice[deviceNumber]
-	if !ok {
-		return nil, &ErrFollowLink{link, errors.Errorf("no mounts for device %q (%v)",
-			getDeviceName(deviceNumber), deviceNumber)}
-	}
-	if mnt == nil {
-		return nil, &ErrFollowLink{link, filesystemLacksMainMountError(deviceNumber)}
-	}
-	return mnt, nil
+	return mnt, ok
 }
 
-// makeLink returns a link of the form <token>=<value> where value is the tag
-// value for the Mount's device. Currently, only "UUID" tokens are supported. An
-// error is returned if the mount has no device, or no UUID.
-func makeLink(mnt *Mount, token string) (string, error) {
-	if token != uuidToken {
-		return "", &ErrMakeLink{mnt, errors.Errorf("token type %q not supported", token)}
+// getMountFromLink returns the main Mount, if any, for the filesystem which the
+// given link points to.  The link should contain a series of token-value pairs
+// (<token>=<value>), one per line.  The supported tokens are "UUID" and "PATH".
+// If the UUID is present and it works, then it is used; otherwise, PATH is used
+// if it is present.  (The fallback from UUID to PATH will keep the link working
+// if the UUID of the target filesystem changes but its mountpoint doesn't.)
+//
+// If a mount has been updated since the last call to one of the mount
+// functions, make sure to run UpdateMountInfo first.
+func getMountFromLink(link string) (*Mount, error) {
+	// Parse the link.
+	uuid := ""
+	path := ""
+	lines := strings.Split(link, "\n")
+	for _, line := range lines {
+		line := strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		pair := strings.Split(line, "=")
+		if len(pair) != 2 {
+			log.Printf("ignoring invalid line in filesystem link file: %q", line)
+			continue
+		}
+		token := pair[0]
+		value := pair[1]
+		switch token {
+		case uuidToken:
+			uuid = value
+		case pathToken:
+			path = value
+		default:
+			log.Printf("ignoring unknown link token %q", token)
+		}
+	}
+	// At least one of UUID and PATH must be present.
+	if uuid == "" && path == "" {
+		return nil, &ErrFollowLink{link, errors.Errorf("invalid filesystem link file")}
 	}
 
-	dirContents, err := ioutil.ReadDir(uuidDirectory)
-	if err != nil {
-		return "", &ErrMakeLink{mnt, err}
+	// Try following the UUID.
+	errMsg := ""
+	if uuid != "" {
+		deviceNumber, err := uuidToDeviceNumber(uuid)
+		if err == nil {
+			mnt, ok := deviceNumberToMount(deviceNumber)
+			if mnt != nil {
+				log.Printf("resolved filesystem link using UUID %q", uuid)
+				return mnt, nil
+			}
+			if ok {
+				return nil, &ErrFollowLink{link, filesystemLacksMainMountError(deviceNumber)}
+			}
+			log.Printf("cannot find filesystem with UUID %q", uuid)
+		} else {
+			log.Printf("cannot find filesystem with UUID %q: %v", uuid, err)
+		}
+		errMsg += fmt.Sprintf("cannot find filesystem with UUID %q", uuid)
+		if path != "" {
+			log.Printf("falling back to using mountpoint path instead of UUID")
+		}
 	}
-	for _, fileInfo := range dirContents {
+	// UUID didn't work.  As a fallback, try the mountpoint path.
+	if path != "" {
+		mnt, err := GetMount(path)
+		if mnt != nil {
+			log.Printf("resolved filesystem link using mountpoint path %q", path)
+			return mnt, nil
+		}
+		log.Print(err)
+		if errMsg == "" {
+			errMsg = fmt.Sprintf("cannot find filesystem with main mountpoint %q", path)
+		} else {
+			errMsg += fmt.Sprintf(" or main mountpoint %q", path)
+		}
+	}
+	// No method worked; return an error.
+	return nil, &ErrFollowLink{link, errors.New(errMsg)}
+}
+
+func (mnt *Mount) getFilesystemUUID() (string, error) {
+	dirEntries, err := os.ReadDir(uuidDirectory)
+	if err != nil {
+		return "", err
+	}
+	for _, dirEntry := range dirEntries {
+		fileInfo, err := dirEntry.Info()
+		if err != nil {
+			continue
+		}
 		if fileInfo.Mode()&os.ModeSymlink == 0 {
 			continue // Only interested in UUID symlinks
 		}
 		uuid := fileInfo.Name()
-		deviceNumber, err := getDeviceNumber(filepath.Join(uuidDirectory, uuid))
+		deviceNumber, err := uuidToDeviceNumber(uuid)
 		if err != nil {
 			log.Print(err)
 			continue
 		}
 		if mnt.DeviceNumber == deviceNumber {
-			return fmt.Sprintf("%s=%s", uuidToken, uuid), nil
+			return uuid, nil
 		}
 	}
-	return "", &ErrMakeLink{mnt, errors.Errorf("cannot determine UUID of device %q (%v)",
-		mnt.Device, mnt.DeviceNumber)}
+	return "", errors.Errorf("cannot determine UUID of device %q (%v)",
+		mnt.Device, mnt.DeviceNumber)
+}
+
+// makeLink creates the contents of a link file which will point to the given
+// filesystem.  This will normally be a string of the form
+// "UUID=<uuid>\nPATH=<path>\n".  If the UUID cannot be determined, the UUID
+// portion will be omitted.
+func makeLink(mnt *Mount) (string, error) {
+	uuid, err := mnt.getFilesystemUUID()
+	if err != nil {
+		// The UUID could not be determined.  This happens for btrfs
+		// filesystems, as the device number found via
+		// /dev/disk/by-uuid/* for btrfs filesystems differs from the
+		// actual device number of the mounted filesystem.  Just rely
+		// entirely on the fallback to mountpoint path.
+		log.Print(err)
+		return fmt.Sprintf("%s=%s\n", pathToken, mnt.Path), nil
+	}
+	return fmt.Sprintf("%s=%s\n%s=%s\n", uuidToken, uuid, pathToken, mnt.Path), nil
 }

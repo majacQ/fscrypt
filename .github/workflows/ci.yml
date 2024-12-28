@@ -27,11 +27,11 @@ jobs:
   build:
     strategy:
       matrix:
-        go: ['1.14', '1.13', '1.12', '1.11']
+        go: ['1.18', '1.19', '1.20']
     name: Build (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - uses: actions/setup-go@v2
       with:
         go-version: ${{ matrix.go }}
@@ -40,14 +40,16 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y libpam0g-dev
     - name: Build
-      run: GO111MODULE=on make
+      run: make
 
   build-32bit:
     name: Build (32-bit)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - uses: actions/setup-go@v2
+      with:
+        go-version: '1.20'
     - name: Install dependencies
       run: |
         sudo dpkg --add-architecture i386
@@ -60,8 +62,10 @@ jobs:
     name: Run integration tests
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - uses: actions/setup-go@v2
+      with:
+        go-version: '1.20'
     - name: Install dependencies
       run: |
         sudo apt-get update
@@ -84,7 +88,7 @@ jobs:
   #       arch: [armv7, aarch64, ppc64le]
   #   runs-on: ubuntu-latest
   #   steps:
-  #     - uses: actions/checkout@v2
+  #     - uses: actions/checkout@v4
   #     - uses: uraimo/run-on-arch-action@v2.0.5
   #       with:
   #         arch: ${{ matrix.arch }}
@@ -97,7 +101,6 @@ jobs:
   #           apt-get install -y build-essential git sudo golang-go \
   #                              libpam0g-dev e2fsprogs keyutils
   #         run: |
-  #           export GO111MODULE=on
   #           make test-setup
   #           keyctl link @u @s
   #           make test
@@ -108,8 +111,10 @@ jobs:
     # The cli tests require kernel 5.4 or later, and thus Ubuntu 20.04 or later.
     runs-on: ubuntu-20.04
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - uses: actions/setup-go@v2
+      with:
+        go-version: '1.20'
     - name: Install dependencies
       run: |
         sudo apt-get update
@@ -121,8 +126,10 @@ jobs:
     name: Generate, format, and lint
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - uses: actions/setup-go@v2
+      with:
+        go-version: '1.20'
     - name: Install dependencies
       run: |
         sudo apt-get update

@@ -3,7 +3,7 @@
 "MNT/dir" is encrypted with fscrypt.
 
 Policy:   desc1
-Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2 
+Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2
 Unlocked: Yes
 
 Protected with 1 protector:
@@ -24,7 +24,7 @@ Enter custom passphrase for protector "prot": "MNT/dir" is now unlocked and read
 "MNT/dir" is encrypted with fscrypt.
 
 Policy:   desc1
-Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2 
+Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2
 Unlocked: Yes
 
 Protected with 1 protector:
@@ -48,7 +48,7 @@ Then re-run:
 "MNT/dir" is encrypted with fscrypt.
 
 Policy:   desc1
-Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2 
+Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2
 Unlocked: Partially (incompletely locked)
 
 Protected with 1 protector:
@@ -66,7 +66,7 @@ bash: MNT/dir/file2: Required key not available
 "MNT/dir" is encrypted with fscrypt.
 
 Policy:   desc1
-Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2 
+Options:  padding:32 contents:AES_256_XTS filenames:AES_256_CTS policy_version:2
 Unlocked: No
 
 Protected with 1 protector:
@@ -76,7 +76,6 @@ cat: MNT/dir/file: No such file or directory
 mkdir: cannot create directory 'MNT/dir/subdir': Required key not available
 
 # Try to lock directory while other user has unlocked
-Enter custom passphrase for protector "prot": "MNT/dir" is now unlocked and ready for use.
 [ERROR] fscrypt lock: Directory "MNT/dir" couldn't be fully
                       locked because other user(s) have unlocked it.
 
@@ -86,3 +85,18 @@ If you want to force the directory to be locked, use:
 contents
 "MNT/dir" is now locked.
 cat: MNT/dir/file: No such file or directory
+
+# Try to operate on locked regular file
+"MNT/dir" is now locked.
+[ERROR] fscrypt status: cannot operate on locked regular file
+                        "MNT/file"
+
+It is not possible to operate directly on a locked regular file, since the
+kernel does not support this. Specify the parent directory instead. (For loose
+files, any directory with the file's policy works.)
+[ERROR] fscrypt unlock: cannot operate on locked regular file
+                        "MNT/file"
+
+It is not possible to operate directly on a locked regular file, since the
+kernel does not support this. Specify the parent directory instead. (For loose
+files, any directory with the file's policy works.)

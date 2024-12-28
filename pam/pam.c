@@ -20,6 +20,7 @@
 #include "pam.h"
 
 #include <security/pam_appl.h>
+#include <security/pam_ext.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,7 +94,7 @@ void freeArray(pam_handle_t* pamh, void** array, int error_status) {
 
 void* copyIntoSecret(void* data) {
   size_t size = strlen(data) + 1;  // include null terminator
-  void* copy = malloc(size);
+  void* copy = calloc(1, size);    // initialize to avoid a compiler warning
   mlock(copy, size);
   memcpy(copy, data, size);
   return copy;
@@ -106,4 +107,8 @@ void freeSecret(pam_handle_t* pamh, char* data, int error_status) {
   memset_sec(data, 0, size);
   munlock(data, size);
   free(data);
+}
+
+void infoMessage(pam_handle_t* pamh, const char* message) {
+  pam_info(pamh, "%s", message);
 }

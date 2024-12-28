@@ -32,8 +32,8 @@ chown "$TEST_USER" "$dir"
 _user_do "echo TEST_USER_PASS | fscrypt encrypt --quiet --source=pam_passphrase '$dir'"
 show_status true
 recovery_passphrase=$(grep -E '^ +[a-z]{20}$' "$dir/fscrypt_recovery_readme.txt" | sed 's/^ +//')
-recovery_protector=$(fscrypt status "$dir" | awk '/Recovery passphrase/{print $1}')
-login_protector=$(fscrypt status "$dir" | awk '/login protector/{print $1}')
+recovery_protector=$(_get_protector_descriptor "$MNT" custom 'Recovery passphrase for dir')
+login_protector=$(_get_login_descriptor)
 _print_header "=> Lock, then unlock with login passphrase"
 _user_do "fscrypt lock '$dir'"
 # FIXME: should we be able to use $MNT:$login_protector here?
@@ -50,8 +50,6 @@ expect "Enter the source number for the new protector"
 send "1\r"
 expect "Enter login passphrase"
 send "TEST_USER_PASS\r"
-expect "Protector is on a different filesystem! Generate a recovery passphrase (recommended)?"
-send "y\r"
 expect eof
 EOF
 show_status true
@@ -59,6 +57,18 @@ show_status true
 begin "Encrypt with login protector as root"
 echo TEST_USER_PASS | fscrypt encrypt --quiet --source=pam_passphrase --user="$TEST_USER" "$dir"
 show_status true
+# The newly-created login protector should be owned by the user, not root.
+# This is partly redundant with the below check, but we might as well test both.
+login_protector=$(_get_login_descriptor)
+owner=$(stat -c "%U:%G" "$MNT_ROOT/.fscrypt/protectors/$login_protector")
+echo -e "\nProtector is owned by $owner"
+# The user should be able to lock and unlock the directory themselves.  This
+# tests that the fscrypt metadata file permissions got set appropriately when
+# root set up the encryption on the user's behalf.
+chown "$TEST_USER" "$dir"
+_user_do "fscrypt lock $dir"
+_user_do "echo TEST_USER_PASS | fscrypt unlock $dir --quiet --unlock-with=$MNT_ROOT:$login_protector"
+_user_do "fscrypt lock $dir"
 
 begin "Encrypt with login protector with --no-recovery"
 chown "$TEST_USER" "$dir"
@@ -84,3 +94,11 @@ chown "$TEST_USER" "$dir"
 _user_do_and_expect_failure \
 	"echo wrong_passphrase | fscrypt encrypt --quiet --source=pam_passphrase '$dir'"
 show_status false
+
+begin "Test that linked protector works even if UUID link is broken"
+echo TEST_USER_PASS | fscrypt encrypt --quiet --source=pam_passphrase --user="$TEST_USER" "$dir"
+protector=$(_get_login_descriptor)
+link_file=$MNT/.fscrypt/protectors/$protector.link
+[ -e "$link_file" ] || _fail "$link_file does not exist"
+sed -i 's/UUID=.*/UUID=00000000-0000-0000-0000-000000000000/' "$link_file"
+fscrypt status "$MNT"

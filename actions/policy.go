@@ -23,9 +23,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/user"
+	"reflect"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/google/fscrypt/crypto"
 	"github.com/google/fscrypt/filesystem"
@@ -145,7 +147,7 @@ func PurgeAllPolicies(ctx *Context) error {
 	if err := ctx.checkContext(); err != nil {
 		return err
 	}
-	policies, err := ctx.Mount.ListPolicies()
+	policies, err := ctx.Mount.ListPolicies(nil)
 	if err != nil {
 		return err
 	}
@@ -178,6 +180,7 @@ type Policy struct {
 	data                *metadata.PolicyData
 	key                 *crypto.Key
 	created             bool
+	ownerIfCreating     *user.User
 	newLinkedProtectors []string
 }
 
@@ -210,6 +213,12 @@ func CreatePolicy(ctx *Context, protector *Protector) (*Policy, error) {
 		created: true,
 	}
 
+	policy.ownerIfCreating, err = getOwnerOfMetadataForProtector(protector)
+	if err != nil {
+		policy.Lock()
+		return nil, err
+	}
+
 	if err = policy.AddProtector(protector); err != nil {
 		policy.Lock()
 		return nil, err
@@ -225,7 +234,7 @@ func GetPolicy(ctx *Context, descriptor string) (*Policy, error) {
 	if err := ctx.checkContext(); err != nil {
 		return nil, err
 	}
-	data, err := ctx.Mount.GetPolicy(descriptor)
+	data, err := ctx.Mount.GetPolicy(descriptor, ctx.TrustedUser)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +271,7 @@ func GetPolicyFromPath(ctx *Context, path string) (*Policy, error) {
 	descriptor := pathData.KeyDescriptor
 	log.Printf("found policy %s for %q", descriptor, path)
 
-	mountData, err := ctx.Mount.GetPolicy(descriptor)
+	mountData, err := ctx.Mount.GetPolicy(descriptor, ctx.TrustedUser)
 	if err != nil {
 		log.Printf("getting policy metadata: %v", err)
 		if _, ok := err.(*filesystem.ErrPolicyNotFound); ok {
@@ -410,6 +419,25 @@ func (policy *Policy) UsesProtector(protector *Protector) bool {
 	return ok
 }
 
+// getOwnerOfMetadataForProtector returns the User to whom the owner of any new
+// policies or protector links for the given protector should be set.
+//
+// This will return a non-nil value only when the protector is a login protector
+// and the process is running as root.  In this scenario, root is setting up
+// encryption on the user's behalf, so we need to make new policies and
+// protector links owned by the user (rather than root) to allow them to be read
+// by the user, just like the login protector itself which is handled elsewhere.
+func getOwnerOfMetadataForProtector(protector *Protector) (*user.User, error) {
+	if protector.data.Source == metadata.SourceType_pam_passphrase && util.IsUserRoot() {
+		owner, err := util.UserFromUID(protector.data.Uid)
+		if err != nil {
+			return nil, err
+		}
+		return owner, nil
+	}
+	return nil, nil
+}
+
 // AddProtector updates the data that is wrapping the Policy Key so that the
 // provided Protector is now protecting the specified Policy. If an error is
 // returned, no data has been changed. If the policy and protector are on
@@ -425,10 +453,15 @@ func (policy *Policy) AddProtector(protector *Protector) error {
 
 	// If the protector is on a different filesystem, we need to add a link
 	// to it on the policy's filesystem.
-	if policy.Context.Mount != protector.Context.Mount {
+	if !reflect.DeepEqual(policy.Context.Mount, protector.Context.Mount) {
 		log.Printf("policy on %s\n protector on %s\n", policy.Context.Mount, protector.Context.Mount)
+		ownerIfCreating, err := getOwnerOfMetadataForProtector(protector)
+		if err != nil {
+			return err
+		}
 		isNewLink, err := policy.Context.Mount.AddLinkedProtector(
-			protector.Descriptor(), protector.Context.Mount)
+			protector.Descriptor(), protector.Context.Mount,
+			protector.Context.TrustedUser, ownerIfCreating)
 		if err != nil {
 			return err
 		}
@@ -461,14 +494,15 @@ func (policy *Policy) AddProtector(protector *Protector) error {
 }
 
 // RemoveProtector updates the data that is wrapping the Policy Key so that the
-// provided Protector is no longer protecting the specified Policy. If an error
-// is returned, no data has been changed. Note that no protector links are
+// protector with the given descriptor is no longer protecting the specified
+// Policy.  If an error is returned, no data has been changed.  Note that the
+// protector itself won't be removed, nor will a link to the protector be
 // removed (in the case where the protector and policy are on different
-// filesystems). The policy and protector can be locked or unlocked.
-func (policy *Policy) RemoveProtector(protector *Protector) error {
-	idx, ok := policy.findWrappedKeyIndex(protector.Descriptor())
+// filesystems).  The policy can be locked or unlocked.
+func (policy *Policy) RemoveProtector(protectorDescriptor string) error {
+	idx, ok := policy.findWrappedKeyIndex(protectorDescriptor)
 	if !ok {
-		return &ErrNotProtected{policy.Descriptor(), protector.Descriptor()}
+		return &ErrNotProtected{policy.Descriptor(), protectorDescriptor}
 	}
 
 	if len(policy.data.WrappedPolicyKeys) == 1 {
@@ -492,7 +526,7 @@ func (policy *Policy) RemoveProtector(protector *Protector) error {
 func (policy *Policy) Apply(path string) error {
 	if pathMount, err := filesystem.FindMount(path); err != nil {
 		return err
-	} else if pathMount != policy.Context.Mount {
+	} else if !reflect.DeepEqual(pathMount, policy.Context.Mount) {
 		return &ErrDifferentFilesystem{policy.Context.Mount, pathMount}
 	}
 
@@ -553,7 +587,7 @@ func (policy *Policy) CanBeAppliedWithoutProvisioning() bool {
 
 // commitData writes the Policy's current data to the filesystem.
 func (policy *Policy) commitData() error {
-	return policy.Context.Mount.AddPolicy(policy.data)
+	return policy.Context.Mount.AddPolicy(policy.data, policy.ownerIfCreating)
 }
 
 // findWrappedPolicyKey returns the index of the wrapped policy key

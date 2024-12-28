@@ -17,18 +17,17 @@
  * the License.
  */
 
-// Note: these tests assume the existence of some well-known directories and
-// devices: /mnt, /home, /tmp, and /dev/loop0.  This is because the mountpoint
-// loading code only retains mountpoints on valid directories, and only retains
-// device names for valid device nodes.
+// Note: these tests assume the existence of some well-known directories: /mnt,
+// /home, and /tmp.  This is because the mountpoint loading code only retains
+// mountpoints on valid directories.
 
 package filesystem
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -90,11 +89,22 @@ func TestLoadMountInfoBasic(t *testing.T) {
 	if mnt.ReadOnly {
 		t.Error("Wrong readonly flag")
 	}
+	if len(mountsByPath) != 1 {
+		t.Error("mountsByPath doesn't contain exactly one entry")
+	}
+	if mountsByPath[mnt.Path] != mnt {
+		t.Error("mountsByPath doesn't contain the correct entry")
+	}
 }
 
 // Test that Mount.Device is set to the mountpoint's source device if
 // applicable, otherwise it is set to the empty string.
 func TestLoadSourceDevice(t *testing.T) {
+	// The mountinfo parser ignores devices that don't exist.  For the valid
+	// device, try /dev/loop0.  If it doesn't exist, skip the test.
+	if _, err := os.Stat("/dev/loop0"); err != nil {
+		t.Skip("/dev/loop0 does not exist, skipping test")
+	}
 	var mountinfo = `
 15 0 7:0 / / rw shared:1 - foo /dev/loop0 rw,data=ordered
 31 15 0:27 / /tmp rw,nosuid,nodev shared:17 - tmpfs tmpfs rw
@@ -116,7 +126,7 @@ func TestLoadSourceDevice(t *testing.T) {
 func TestNondirectoryMountsIgnored(t *testing.T) {
 	beginLoadMountInfoTest()
 	defer endLoadMountInfoTest()
-	file, err := ioutil.TempFile("", "fscrypt_regfile")
+	file, err := os.CreateTemp("", "fscrypt_regfile")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +159,7 @@ func TestNonLatestMountsIgnored(t *testing.T) {
 
 // Test that escape sequences in the mountinfo file are unescaped correctly.
 func TestLoadMountWithSpecialCharacters(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "fscrypt")
+	tempDir, err := os.MkdirTemp("", "fscrypt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,6 +180,21 @@ func TestLoadMountWithSpecialCharacters(t *testing.T) {
 	mnt := mountForDevice("259:3")
 	if mnt.Path != mountpoint {
 		t.Fatal("Wrong mountpoint")
+	}
+}
+
+// Tests the EscapeString() and unescapeString() functions.
+func TestStringEscaping(t *testing.T) {
+	charsNeedEscaping := " \t\n\\"
+	charsDontNeedEscaping := "ABCDEF\u2603\xff\xff\v"
+
+	orig := charsNeedEscaping + charsDontNeedEscaping
+	escaped := `\040\011\012\134` + charsDontNeedEscaping
+	if EscapeString(orig) != escaped {
+		t.Fatal("EscapeString gave wrong result")
+	}
+	if unescapeString(escaped) != orig {
+		t.Fatal("unescapeString gave wrong result")
 	}
 }
 
@@ -275,7 +300,7 @@ func TestRootMountpointIsPreferred(t *testing.T) {
 // Test that a mountpoint that is not "/" but still contains all other
 // mountpoints is preferred, given independent subtrees.
 func TestHighestMountpointIsPreferred(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "fscrypt")
+	tempDir, err := os.MkdirTemp("", "fscrypt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +335,7 @@ func TestHighestMountpointIsPreferred(t *testing.T) {
 // mountpoints are contained in other mountpoints, the chosen Mount is the root
 // of a tree of mountpoints whose mounted subtrees contain all mounted subtrees.
 func TestLoadContainedSubtreesAndMountpoints(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "fscrypt")
+	tempDir, err := os.MkdirTemp("", "fscrypt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,14 +398,14 @@ func TestLoadAmbiguousMounts(t *testing.T) {
 	}
 }
 
-// Test making a filesystem link (i.e. "UUID=...") and following it, and test
-// that leading and trailing whitespace in the link is ignored.
+// Test making a filesystem link and following it, and test that leading and
+// trailing whitespace in the link is ignored.
 func TestGetMountFromLink(t *testing.T) {
 	mnt, err := getTestMount(t)
 	if err != nil {
 		t.Skip(err)
 	}
-	link, err := makeLink(mnt, uuidToken)
+	link, err := makeLink(mnt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,6 +430,112 @@ func TestGetMountFromLink(t *testing.T) {
 	}
 }
 
+// Test that makeLink() is including the expected information in links.
+func TestMakeLink(t *testing.T) {
+	mnt, err := getTestMount(t)
+	if err != nil {
+		t.Skip(err)
+	}
+	link, err := makeLink(mnt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Normally, both UUID and PATH should be included.
+	if !strings.Contains(link, "UUID=") {
+		t.Fatal("Link doesn't contain UUID")
+	}
+	if !strings.Contains(link, "PATH=") {
+		t.Fatal("Link doesn't contain PATH")
+	}
+
+	// Without a valid device number, only PATH should be included.
+	mntCopy := *mnt
+	mntCopy.DeviceNumber = 0
+	link, err = makeLink(&mntCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(link, "UUID=") {
+		t.Fatal("Link shouldn't contain UUID")
+	}
+	if !strings.Contains(link, "PATH=") {
+		t.Fatal("Link doesn't contain PATH")
+	}
+}
+
+// Test that old filesystem links that contain a UUID only still work.
+func TestGetMountFromLegacyLink(t *testing.T) {
+	mnt, err := getTestMount(t)
+	if err != nil {
+		t.Skip(err)
+	}
+	uuid, err := mnt.getFilesystemUUID()
+	if uuid == "" || err != nil {
+		t.Fatal("Can't get UUID of test filesystem")
+	}
+
+	link := fmt.Sprintf("UUID=%s", uuid)
+	linkedMnt, err := getMountFromLink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkedMnt != mnt {
+		t.Fatal("Link doesn't point to the same Mount")
+	}
+}
+
+// Test that if the UUID in a filesystem link doesn't work, then the PATH is
+// used instead, and vice versa.
+func TestGetMountFromLinkFallback(t *testing.T) {
+	mnt, err := getTestMount(t)
+	if err != nil {
+		t.Skip(err)
+	}
+	badUUID := "00000000-0000-0000-0000-000000000000"
+	badPath := "/NONEXISTENT_MOUNT"
+	goodUUID, err := mnt.getFilesystemUUID()
+	if goodUUID == "" || err != nil {
+		t.Fatal("Can't get UUID of test filesystem")
+	}
+
+	// only PATH valid (should succeed)
+	link := fmt.Sprintf("UUID=%s\nPATH=%s\n", badUUID, mnt.Path)
+	linkedMnt, err := getMountFromLink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkedMnt != mnt {
+		t.Fatal("Link doesn't point to the same Mount")
+	}
+
+	// only PATH given at all (should succeed)
+	link = fmt.Sprintf("PATH=%s\n", mnt.Path)
+	linkedMnt, err = getMountFromLink(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkedMnt != mnt {
+		t.Fatal("Link doesn't point to the same Mount")
+	}
+
+	// only UUID valid (should succeed)
+	link = fmt.Sprintf("UUID=%s\nPATH=%s\n", goodUUID, badPath)
+	if linkedMnt, err = getMountFromLink(link); err != nil {
+		t.Fatal(err)
+	}
+	if linkedMnt != mnt {
+		t.Fatal("Link doesn't point to the same Mount")
+	}
+
+	// neither valid (should fail)
+	link = fmt.Sprintf("UUID=%s\nPATH=%s\n", badUUID, badPath)
+	linkedMnt, err = getMountFromLink(link)
+	if linkedMnt != nil || err == nil {
+		t.Fatal("Following a bad link succeeded")
+	}
+}
+
 // Benchmarks how long it takes to update the mountpoint data
 func BenchmarkLoadFirst(b *testing.B) {
 	for n := 0; n < b.N; n++ {
@@ -412,5 +543,23 @@ func BenchmarkLoadFirst(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// Test mount comparison by values instead of by reference,
+// as the map mountsByDevice gets recreated on each load.
+// This ensures that concurrent mounts work properly.
+func TestMountComparison(t *testing.T) {
+	var mountinfo = `
+15 0 259:3 / /home rw,relatime shared:1 - ext4 /dev/root rw,data=ordered
+`
+	beginLoadMountInfoTest()
+	defer endLoadMountInfoTest()
+	loadMountInfoFromString(mountinfo)
+	firstMnt := mountForDevice("259:3")
+	loadMountInfoFromString(mountinfo)
+	secondMnt := mountForDevice("259:3")
+	if !reflect.DeepEqual(firstMnt, secondMnt) {
+		t.Errorf("Mount comparison does not work")
 	}
 }
